@@ -20,7 +20,7 @@ static void resize_handler( int signal)
 		return;
 	struct winsize window_size{};
 	ioctl(0, TIOCGWINSZ, &window_size);
-	auto w_instance = StateProvider::instance();
+	auto w_instance = EventDog::instance();
 	w_instance->setWinSize(window_size.ws_row, window_size.ws_col);
 }
 
@@ -46,6 +46,8 @@ bool compareAnd( First base, Others... others)
 	return ( ... && Pred()( base, others));
 }
 
+#define DEFINED( arg) (arg).empty()
+
 int main( int argc, char *argv[])
 {
 	const char *puzzle_file = NOT_SET;
@@ -66,14 +68,14 @@ int main( int argc, char *argv[])
 		   .addOption( "reverse-solve", "r", "no", "Reverse the effect of forward and rewind button.")
 		   .build();
 
-	if( !builder.asDefault( "help").empty())
+	if( !DEFINED( builder.asDefault( "help")))
 	{
 		builder.showHelp();
 		exit( EXIT_SUCCESS);
 	}
 
 	auto maybe_file = builder.asDefault( "file");
-	if( !maybe_file.empty())
+	if( !DEFINED( maybe_file))
 		puzzle_file = maybe_file.data();
 
 	if( puzzle_file == nullptr)
@@ -102,7 +104,7 @@ int main( int argc, char *argv[])
 	sigaction( SIGWINCH, &resize_action, NOT_SET);
 	raise( SIGWINCH);   // Get current window size.
 	// If $LINES and $COLUMNS is non-zero, terminal supports cursor motion.
-	if(StateProvider::getWinLines() && StateProvider::getWinCols())
+	if( EventDog::getWinLines() && EventDog::getWinCols())
 	{
 		struct sigaction refresh_action{};
 		refresh_action.sa_handler = refresh_before_exit;
@@ -135,14 +137,15 @@ int main( int argc, char *argv[])
 			 g_end   = step == -1 ? --response.begin() : response.cend();
 		for( auto begin = g_begin, end = g_end; begin != end;)
 		{
+			// Calculate the puzzle number to indicate at the top
 			auto puzzle_number = static_cast<int>( std::distance( response.cbegin(), begin) + 1);
 			PuzzleSolver solver( begin->puzzle, begin->keys);
 			if( !sims[ puzzle_number - 1])
 				sims[ puzzle_number - 1] = std::make_unique<TerminalPuzzleSimulator>( solver, builder);
 
 			auto& term_simulator = sims[ puzzle_number - 1];
-			term_simulator->setSimulatorSpeed((int)builder.asInt("speed"));
-			StateProvider::registerWinUpdateCallback( [&term_simulator, &puzzle_number]( bool refresh)
+			term_simulator->setSimulatorSpeed(( int)builder.asInt("speed"));
+			EventDog::registerWinUpdateCallback([ &term_simulator, &puzzle_number](bool refresh)
 			                                          {
 				                                          term_simulator->simulate( std::cout, puzzle_number, refresh);
 			                                          });

@@ -117,7 +117,7 @@ public:
 
 	void showHelp() const
 	{
-		printf( "Usage: %s [OPTIONS...] puzzle-file\n\n", APP_NAME);
+		printf( "Usage: %s [OPTIONS...] puzzle-file\n\nOPTIONS:\n", APP_NAME);
 		size_t max_long_option_length = 0;
 		for( auto& long_option : long_options)
 			max_long_option_length = std::max( max_long_option_length, long_option.size());

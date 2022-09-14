@@ -9,6 +9,8 @@
 #include <climits>
 #include <utility>
 #include <list>
+#include <sys/epoll.h>
+#include <cassert>
 #include "puzzle-solver.hpp"
 #include "option-builder.hpp"
 
@@ -22,16 +24,14 @@
 #define KEY_NEXT     n
 #define KEY_PREVIOUS   b
 
-
-
-class StateProvider
+class EventDog
 {
 public:
-	static StateProvider *instance( int index = 0)
+	static EventDog *instance( int index = 0)
 	{
-		static std::list<StateProvider> providers;
+		static std::list<EventDog> providers;
 		if( providers.size() <= index)
-			providers.emplace_back( StateProvider());
+			providers.emplace_back( EventDog());
 		return ( index == 0 ? providers.begin() : std::next( providers.begin(), index)).operator->();
 	}
 
@@ -41,7 +41,7 @@ public:
 		cols = v_cols;
 		lines = v_rows;
 		if( !initial_run)
-			StateProvider::resized() = true;
+			EventDog::resized() = true;
 
 		if( update_callback)
 			update_callback( true);
@@ -51,7 +51,7 @@ public:
 
 	static void registerWinUpdateCallback( const std::function<void( bool)>& cb)
 	{
-	   StateProvider::instance()->update_callback = cb;
+		EventDog::instance()->update_callback = cb;
 	}
 
 	bool &paused()
@@ -61,26 +61,36 @@ public:
 
 	static bool& resized()
 	{
-		return StateProvider::instance()->is_resized;
+		return EventDog::instance()->is_resized;
 	}
 
 	static size_t getWinLines()
 	{
-		return StateProvider::instance()->lines;
+		return EventDog::instance()->lines;
 	}
 
 	static size_t getWinCols()
 	{
-		return StateProvider::instance()->cols;
+		return EventDog::instance()->cols;
 	}
 
 	static bool& firstFocus()
 	{
-		return StateProvider::instance()->is_first_focus;
+		return EventDog::instance()->is_first_focus;
+	}
+
+	static bool isReady( int ms)
+	{
+		struct timeval timeout = { 0, static_cast<long>( ms * 1000)};
+		fd_set rfds;
+		FD_ZERO( &rfds);
+		FD_SET( STDIN_FILENO, &rfds);
+		return ( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, ms == 0 ? nullptr : &timeout) > 0
+		         && FD_ISSET( STDIN_FILENO, &rfds));
 	}
 
 private:
-	StateProvider() = default;
+	EventDog() = default;
 	size_t cols{}, lines{};
 	bool is_paused{}, is_resized{},
 	     is_first_focus{ true};
@@ -106,22 +116,9 @@ enum class Conclusion
 	Forward
 };
 
-bool isReady( size_t ms)
+Event watchEvent( int ms)
 {
-	struct timeval timeout = { 0, static_cast<long>( ms * 1000)};
-	fd_set rfds;
-	FD_ZERO( &rfds);
-	FD_SET( STDIN_FILENO, &rfds);
-	if( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, ms == 0 ? nullptr : &timeout) > 0
-		&& FD_ISSET( STDIN_FILENO, &rfds))
-		return true;
-
-	return false;
-}
-
-Event watchEvent( size_t ms)
-{
-	if( isReady( ms))
+	if( EventDog::isReady( ms))
 	{
 		int input = std::getchar();
 		if( input == Q( KEY_QUIT))
@@ -137,9 +134,9 @@ Event watchEvent( size_t ms)
 		else if(input == Q( KEY_PREVIOUS))
 			return Event::Previous;
 	}
-	else if( StateProvider::resized())
+	else if( EventDog::resized())
 	{
-		StateProvider::resized() = false;
+		EventDog::resized() = false;
 		return Event::Resize;
 	}
 
@@ -191,7 +188,7 @@ public:
 
 	Conclusion simulate( std::ostream &strm, int puzzle_number, bool refresh_run) override
 	{
-		auto state_provider = StateProvider::instance( puzzle_number - 1);
+		auto state_provider = EventDog::instance( puzzle_number - 1);
 		auto matches = _solver.matches();
 		std::vector<PuzzleSolver::underlying_type> base_order( matches.size());
 		std::copy( matches.cbegin(), matches.cend(), base_order.begin());
@@ -207,8 +204,8 @@ public:
 		{
 			printf("\x1B[2J\x1B[H");    // Clear screen and move cursor to origin
 			std::tie( n_lines, padding) = display( strm, puzzle_number);
-			rem_lines = (int) StateProvider::getWinLines() - n_lines;
-			n_cols = (int) StateProvider::getWinCols() / longest_size;
+			rem_lines = (int) EventDog::getWinLines() - n_lines;
+			n_cols = (int) EventDog::getWinCols() / longest_size;
 			word_row = word_col = 0;
 		};
 		populate();
@@ -314,7 +311,7 @@ public:
 						{
 							char remaining[ 3]{};
 							// The first focus is a false trigger. Discard it.
-							if( !StateProvider::firstFocus() && read( STDIN_FILENO, remaining, 2) == 2)
+							if( !EventDog::firstFocus() && read(STDIN_FILENO, remaining, 2) == 2)
 							{
 								if( strcmp( remaining, "[I") == 0)
 									state_provider->paused() = false;
@@ -327,7 +324,7 @@ public:
 									freeze( b_soln, reset);
 								}
 							}
-							StateProvider::firstFocus() = false;
+							EventDog::firstFocus() = false;
 							break;
 						}
 						case Event::Next:
@@ -401,8 +398,8 @@ private:
 
 	std::pair<int, int> display( std::ostream& strm, int puzzle_number = 1)
 	{
-		auto rows = StateProvider::getWinLines(),
-			 cols = StateProvider::getWinCols();
+		auto rows = EventDog::getWinLines(),
+			 cols = EventDog::getWinCols();
 		auto cols_padding = ((int)(cols - 3 * puzzle.size() + 1)) / 2;
 		if( 0 > cols_padding || puzzle.front().size() > rows)
 			panic_exit();
@@ -462,8 +459,8 @@ private:
 
 	static void panic_exit()
 	{
-		const auto win_width = StateProvider::getWinCols();
-		const auto half_win_height = StateProvider::getWinLines() / 2;
+		const auto win_width = EventDog::getWinCols();
+		const auto half_win_height = EventDog::getWinLines() / 2;
 		constexpr std::string_view main_message = "Puzzle too large for your terminal",
 								   exit_message = "Press ENTER to exit";
 		fprintf( stderr, "\x1B[?25l\x1B[%ld;%ldH\x1B[31m%s\x1B[0m", half_win_height,
