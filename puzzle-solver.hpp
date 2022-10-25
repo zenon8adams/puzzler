@@ -189,9 +189,11 @@ private:
 	bool tallies( const ProgressTracker& tracker )
 	{
 		Coord clone = tracker.start;
+		auto p_rows = m_puzzle.size(),
+			 p_cols = m_puzzle.front().size();
 		for( std::size_t i = 0; i < tracker.word.size(); ++i )
 		{
-			if( m_puzzle[ clone.x ][ clone.y ] != tracker.word[ i ] )
+			if( clone.x >= p_rows || clone.y >= p_cols || m_puzzle[ clone.x ][ clone.y ] != tracker.word[ i ] )
 				return false;
 			clone = m_dirlookup[ tracker.dmatch ]( clone );
 		}
@@ -244,122 +246,6 @@ std::function<PuzzleSolver::Coord(PuzzleSolver::Coord)>> PuzzleSolver::m_dirlook
 	{ Dir::SE, []( auto pos ){ return Coord{ pos.x+1, pos.y+1 }; } },
 	{ Dir::NW, []( auto pos ){ return Coord{ pos.x-1, pos.y-1 }; } },
 	{ Dir::SW, []( auto pos ){ return Coord{ pos.x+1, pos.y-1 }; } }
-};
-
-class PuzzleSimulator
-{
-public:
-	virtual void simulate( std::ostream&) = 0;
-
-	void replaceSolver( const PuzzleSolver& solver)
-	{
-		_solver = solver;
-		_solver.solve();
-	}
-
-	virtual ~PuzzleSimulator() = default;
-
-protected:
-	explicit PuzzleSimulator( PuzzleSolver solver)
-	: _solver( std::move( solver))
-	{
-		_solver.solve();
-	}
-
-	PuzzleSolver _solver;
-};
-
-class TerminalPuzzleSimulator: public PuzzleSimulator
-{
-public:
-	explicit TerminalPuzzleSimulator( const PuzzleSolver& solver )
-	: PuzzleSimulator( solver)
-	{
-	}
-	
-	void setSimulatorSpeed( int fps )
-	{
-		m_sim_speed = fps > 0 ? 1000 / fps : m_sim_speed;
-	}
-	
-	void simulate( std::ostream& strm) override
-	{
-		auto tmp = _solver.puzzle();
-		std::vector<std::vector<char>> puzzle( tmp.size() );
-		std::transform( tmp.cbegin(), tmp.cend(), puzzle.begin(),
-		[]( const auto& str )
-		{
-			std::vector<char> inner;
-			for( const auto& elm : str )
-				inner.emplace_back(elm);
-			return inner;
-		} );
-		auto words  = _solver.words();
-		auto matches = _solver.matches();
-		std::vector<PuzzleSolver::underlying_type> soln( matches.size() );
-		std::copy( matches.cbegin(), matches.cend(), soln.begin() );
-		
-		printf("\x1B[2J\x1B[H");    // Clear screen and move cursor to origin
-		auto n_lines = display( puzzle, words, strm );
-		auto key_offset = n_lines - words.size() + 1;
-		// Disable buffering in terminal
-		setvbuf(stdout, nullptr, _IONBF, 0);
-		// Hide cursor
-		printf("\x1B[?25l");
-		// Save current cursor position
-		printf( "\x1B[s");
-		for( auto& m : soln )
-		{
-			auto color = 30 + randc();  // Generate random color.
-			for( const auto& w : m.word )
-			{
-				printf( "\x1B[%d;%dH\x1B[%dm%c\x1B[0m\x1B", m.start.x + 1, m.start.y + 1 + 2 * m.start.y,
-														color, puzzle[ m.start.x][ m.start.y]);
-				pause( m_sim_speed );
-				m.start = PuzzleSolver::next( m.dmatch )( m.start );
-			}
-			// Display search complete indicator for word.
-			auto w = std::find( words.begin(), words.end(), m.reversed ? reversed( m.word ) : m.word );
-			printf( "\x1B[%zu;%zuH\x1B[%dm%s", key_offset + (int)( w - words.begin()), w->size() + 1, color, "✓");
-		}
-		// Restore cursor
-		printf("\x1B[?25h");
-		// We are done! Restore cursor position
-		printf("\x1B[u");
-	}
-	
-private:
-	
-	template <typename PuzzleContainer, typename WordContainer>
-	int display( const PuzzleContainer& puzzle, const WordContainer& words, std::ostream& strm )
-	{
-		int n_lines = 0;
-		for( std::size_t i = 0; i < puzzle.size(); ++i )
-		{
-			for( std::size_t j = 0; j < puzzle[ i].size(); ++j )
-				strm << puzzle[ i][ j] << "  ";
-			strm <<'\n';
-			++n_lines;
-		}
-		strm << "\n\nKey:\n___\n";
-		n_lines += 4;
-		for( const auto& w : words )
-		{
-			strm << w <<'\n';
-			++n_lines;
-		}
-		return n_lines;
-	}
-
-	static int randc()
-	{
-		static std::random_device dev;
-		static std::mt19937_64 gen( dev());
-		static std::uniform_int_distribution<int> dist( RED, CYAN);
-		return dist( gen);
-	}
-	
-	int m_sim_speed = 1000/2;
 };
 
 class PuzzleFileReader
