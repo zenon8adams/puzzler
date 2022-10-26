@@ -1,6 +1,8 @@
 # puzzle-solver
 A command line tool that solve word search puzzles
 
+## Example
+![Animation](example/puzzler-animation.gif)
 ## Building
 Run:
 ```sh
