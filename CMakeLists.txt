@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15)
 project(puzzler)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -o2")
+set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -g3")
 
 # Read the version information from the VERSION file
 file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" PACKAGE_VERSION)
@@ -13,6 +13,7 @@ string(REGEX REPLACE "[0-9]+\\.[0-9]+\\.([0-9]+).*" "\\1" CPACK_PACKAGE_VERSION_
 set(PROJECT_VERSION ${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH})
 
 add_executable(puzzler main.cpp
+                       option_parser.hpp
                        puzzle-solver.hpp
                        puzzle-simulator.hpp
                        utility.hpp)

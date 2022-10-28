@@ -9,6 +9,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include "puzzle-simulator.hpp"
+#include "option_parser.hpp"
 
 static void resize_handler( int signal)
 {
@@ -22,13 +23,29 @@ static void resize_handler( int signal)
 
 int main( int argc, char *argv[])
 {
-	if( argc != 2)
+	const char *puzzle_file = nullptr;
+	OptionParser parser( argc, argv);
+	parser.addMismatchConsumer([&]( const char *option)
+	{
+		puzzle_file = option;
+	});
+	parser.addOption( "speed", 1, "s", "1")
+		  .addOption( "file", 1, "f")
+		  .addOption( "matches-only", 1, "only", "no")
+		  .addOption( "predictable", 1, "p", "no")
+		  .extract();
+
+	auto maybe_file = parser.asDefault( "file");
+	if( !maybe_file.empty())
+		puzzle_file = maybe_file.data();
+
+	if( puzzle_file == nullptr)
 	{
 		fprintf( stderr, "Usage: %s puzzle-file\n", *argv);
 		exit( 1);
 	}
 
-	auto scope = std::ifstream( *++argv);
+	auto scope = std::ifstream( puzzle_file);
 	if( !scope)
 	{
 		fprintf( stderr, "Invalid file!");
@@ -50,8 +67,8 @@ int main( int argc, char *argv[])
 	{
 		struct termios orig_term_state{}, raw_term_state{};
 		PuzzleSolver solver( response.front().puzzle, response.front().keys);
-		TerminalPuzzleSimulator term_simulator( solver);
-		term_simulator.setSimulatorSpeed( 3);
+		TerminalPuzzleSimulator term_simulator( solver, parser);
+		term_simulator.setSimulatorSpeed((int)parser.asInt( "speed"));
 		term_simulator.simulate( std::cout);
 		tcgetattr( STDIN_FILENO, &orig_term_state);
 		cfmakeraw( &raw_term_state);

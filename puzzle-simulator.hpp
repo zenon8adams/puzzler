@@ -7,7 +7,9 @@
 #include <condition_variable>
 #include <iomanip>
 #include <climits>
+#include <utility>
 #include "puzzle-solver.hpp"
+#include "option_parser.hpp"
 
 class WindowSizeProvider
 {
@@ -72,20 +74,21 @@ public:
 	virtual ~PuzzleSimulator() = default;
 
 protected:
-	explicit PuzzleSimulator( PuzzleSolver solver)
-		: _solver( std::move( solver))
+	explicit PuzzleSimulator( PuzzleSolver solver, OptionParser  options)
+		: _solver( std::move( solver)), _options( std::move( options))
 	{
 		_solver.solve();
 	}
 
 	PuzzleSolver _solver;
+	OptionParser _options;
 };
 
 class TerminalPuzzleSimulator: public PuzzleSimulator
 {
 public:
-	explicit TerminalPuzzleSimulator( const PuzzleSolver& solver )
-		: PuzzleSimulator( solver)
+	explicit TerminalPuzzleSimulator( const PuzzleSolver& solver, const OptionParser& options)
+		: PuzzleSimulator( solver, options)
 	{
 	}
 
@@ -110,15 +113,20 @@ public:
 		auto matches = _solver.matches();
 		auto longest_size = std::max_element( matches.cbegin(), matches.cend(),
 						    []( auto& left, auto& right) { return left.word.size() < right.word.size();})
-							->word.size() + 1;
+							->word.size() + 2;
 		int last_x_pos{-1}, last_y_pos{-1};
 		char last_char{CHAR_MAX};
 		bool fast_forward = false;
 		std::unordered_map<std::string, int> color_selection;
 
+		std::vector<PuzzleSolver::underlying_type> base_order( matches.size());
+		std::copy( matches.cbegin(), matches.cend(), base_order.begin());
+		// Add a bit of un-determinism in the selection order
+		if( !_options.asBool( "predictable"))
+			std::shuffle( base_order.begin(), base_order.end(), std::random_device());
 		reset:
-		std::vector<PuzzleSolver::underlying_type> soln( matches.size());
-		std::copy( matches.cbegin(), matches.cend(), soln.begin());
+		std::vector<PuzzleSolver::underlying_type> soln( base_order.size());
+		std::copy( base_order.cbegin(), base_order.cend(), soln.begin());
 		printf("\x1B[2J\x1B[H");    // Clear screen and move cursor to origin
 		auto adjustments = display( puzzle, words, strm);
 		auto n_lines = adjustments.first,
@@ -190,8 +198,11 @@ private:
 		for( std::size_t i = 0, i_size = puzzle.size(); i < i_size; ++i )
 		{
 			strm << std::setw( cols_padding);
-			for( std::size_t j = 0, j_size = puzzle[ i].size(); j < j_size; ++j )
-				strm << puzzle[ i][ j] << ( j + 1 == j_size ? "" : "  ");
+			if( !_options.asBool( "matches-only"))
+			{
+				for( std::size_t j = 0, j_size = puzzle[ i].size(); j < j_size; ++j )
+					strm << puzzle[ i][ j] << ( j + 1 == j_size ? "" : "  ");
+			}
 			strm <<'\n';
 		}
 		auto remaining_lines = (int)rows - (int)n_lines;
