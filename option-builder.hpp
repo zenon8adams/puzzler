@@ -1,18 +1,18 @@
-#ifndef PUZZLER_OPTION_PARSER_HPP
-#define PUZZLER_OPTION_PARSER_HPP
+#ifndef PUZZLER_OPTION_BUILDER_HPP
+#define PUZZLER_OPTION_BUILDER_HPP
 
 #include <cstring>
 #include <functional>
 
-class OptionParser
+class OptionBuilder
 {
 public:
-	OptionParser( int ac, char **av)
+	OptionBuilder(int ac, char **av)
 		: argc( ac), argv( av)
 	{
 	}
 
-	void extract()
+	void build()
 	{
 		int i = 1;
 		while( i < argc)
@@ -24,7 +24,7 @@ public:
 				++current_option;
 				++hypen_count;
 			}
-			if( hypen_count == 0)
+			if( hypen_count == 0 && mis_handler)
 			{
 				mis_handler( current_option);
 				continue;
@@ -93,8 +93,8 @@ public:
 		mis_handler = handler;
 	}
 
-	OptionParser& addOption( const char *long_key, int n_args = 0,
-					const char *short_key = nullptr, const char *default_value = nullptr)
+	OptionBuilder& addOption( const char *long_key, const char *short_key = nullptr,
+							  const char *default_value = nullptr, int n_args = 1)
 	{
 		options[ long_key] = n_args;
 		if( short_key != nullptr)
@@ -119,4 +119,4 @@ public:
 	int argc;
 	std::function<void(const char *)> mis_handler;
 };
-#endif //PUZZLER_OPTION_PARSER_HPP
+#endif //PUZZLER_OPTION_BUILDER_HPP

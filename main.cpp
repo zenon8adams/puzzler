@@ -1,3 +1,4 @@
+#define __USE_POSIX199309
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -9,7 +10,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include "puzzle-simulator.hpp"
-#include "option_parser.hpp"
+#include "option-builder.hpp"
 
 static void resize_handler( int signal)
 {
@@ -17,30 +18,44 @@ static void resize_handler( int signal)
 		return;
 	struct winsize window_size{};
 	ioctl(0, TIOCGWINSZ, &window_size);
-	auto w_instance = WindowSizeProvider::instance();
-	w_instance->setNewSize( window_size.ws_row, window_size.ws_col);
+	auto w_instance = StateProvider::instance();
+	w_instance->setWinSize(window_size.ws_row, window_size.ws_col);
+}
+
+static struct termios orig_term_state;
+static void refresh_before_exit( int signal)
+{
+	if( orig_term_state.c_iflag == 0)
+		return;
+
+	printf("\x1B[?25h\x1B[2J"); // Clear screen
+	tcsetattr( STDIN_FILENO, TCSANOW, &orig_term_state);
+
+	// exit() must not be called here to avoid infinite loop
+	_Exit( signal);
 }
 
 int main( int argc, char *argv[])
 {
 	const char *puzzle_file = nullptr;
-	OptionParser parser( argc, argv);
-	parser.addMismatchConsumer([&]( const char *option)
+	OptionBuilder builder( argc, argv);
+	builder.addMismatchConsumer([&](const char *option)
 	{
 		puzzle_file = option;
 	});
-	parser.addOption( "speed", 1, "s", "1")
-		  .addOption( "file", 1, "f")
-		  .addOption( "matches-only", 1, "only", "no")
-		  .addOption( "predictable", 1, "p", "no")
-		  .extract();
+	builder.addOption( "speed", "s", "1")
+		   .addOption( "file", "f")
+		   .addOption( "matches-only", "only", "no")
+		   .addOption( "predictable", "p", "no")
+		   .build();
 
-	auto maybe_file = parser.asDefault( "file");
+	auto maybe_file = builder.asDefault("file");
 	if( !maybe_file.empty())
 		puzzle_file = maybe_file.data();
 
 	if( puzzle_file == nullptr)
 	{
+		//TODO: Show help
 		fprintf( stderr, "Usage: %s puzzle-file\n", *argv);
 		exit( 1);
 	}
@@ -60,19 +75,42 @@ int main( int argc, char *argv[])
 		exit( 1);
 	}
 
-	signal( SIGWINCH, resize_handler);
+	struct sigaction resize_action{};
+	resize_action.sa_handler = resize_handler;
+	sigaction( SIGWINCH, &resize_action, nullptr);
 	raise( SIGWINCH);   // Get current window size.
 	// If $LINES and $COLUMNS is non-zero, terminal supports cursor motion.
-	if( WindowSizeProvider::getLines() && WindowSizeProvider::getCols())
+	if(StateProvider::getWinLines() && StateProvider::getWinCols())
 	{
-		struct termios orig_term_state{}, raw_term_state{};
-		PuzzleSolver solver( response.front().puzzle, response.front().keys);
-		TerminalPuzzleSimulator term_simulator( solver, parser);
-		term_simulator.setSimulatorSpeed((int)parser.asInt( "speed"));
-		term_simulator.simulate( std::cout);
+		struct sigaction refresh_action{};
+		refresh_action.sa_handler = refresh_before_exit;
+		sigaction( SIGINT, &refresh_action, nullptr);
+		atexit( [] { refresh_before_exit( EXIT_SUCCESS);});
+
+		struct termios raw_term_state{};
 		tcgetattr( STDIN_FILENO, &orig_term_state);
-		cfmakeraw( &raw_term_state);
+		raw_term_state.c_iflag       = ICRNL | IUTF8;
+		raw_term_state.c_oflag       = OPOST | OFILL | ONLCR | NL0;
+		raw_term_state.c_lflag       = ISIG;
+		raw_term_state.c_cflag       = CS8 | CREAD;
+		raw_term_state.c_ispeed      = B9600;
+		raw_term_state.c_ospeed      = B9600;
+		raw_term_state.c_cc[ VINTR]  = 003;
+		raw_term_state.c_cc[ VSUSP]  = 032;
+		raw_term_state.c_cc[ VEOF]   = 004;
+		raw_term_state.c_cc[ VMIN]   = 1;
+		raw_term_state.c_cc[ VTIME]  = 0;
+		raw_term_state.c_cc[ VERASE] = 0177;
+
 		tcsetattr( STDIN_FILENO, TCSANOW, &raw_term_state);
+		PuzzleSolver solver( response.front().puzzle, response.front().keys);
+		TerminalPuzzleSimulator term_simulator( solver, builder);
+		term_simulator.setSimulatorSpeed((int)builder.asInt("speed"));
+		StateProvider::registerWinUpdateCallback( [&term_simulator]( bool refresh)
+		{
+			term_simulator.simulate( std::cout, refresh);
+		});
+		term_simulator.simulate( std::cout, false);
 		printf("\x1B[?25l");
 		while( std::getchar() != 'q')
 			;

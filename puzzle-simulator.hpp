@@ -9,61 +9,98 @@
 #include <climits>
 #include <utility>
 #include "puzzle-solver.hpp"
-#include "option_parser.hpp"
+#include "option-builder.hpp"
 
-class WindowSizeProvider
+class StateProvider
 {
-	size_t cols{}, lines{};
 public:
-	static WindowSizeProvider *instance()
+	static StateProvider *instance()
 	{
-		static WindowSizeProvider provider;
+		static StateProvider provider;
 		return &provider;
 	}
 
-	void setNewSize( size_t v_rows, size_t v_cols)
+	void setWinSize( size_t v_rows, size_t v_cols)
 	{
-		std::unique_lock<std::mutex> lock( mtx_resource);
+		static bool initial_run = true;
 		cols = v_cols;
 		lines = v_rows;
-		resized = true;
-		watcher.notify_one();
+		if( !initial_run)
+			StateProvider::resized() = true;
+
+		if( update_callback)
+			update_callback( true);
+
+		initial_run = false;
 	}
 
-	static size_t getLines()
+	static void registerWinUpdateCallback( const std::function<void( bool)>& cb)
 	{
-		return WindowSizeProvider::instance()->lines;
+	   StateProvider::instance()->update_callback = cb;
 	}
 
-	static size_t getCols()
+	static bool& paused()
 	{
-		return WindowSizeProvider::instance()->cols;
+		return StateProvider::instance()->is_paused;
 	}
 
-	std::mutex mtx_resource;
-	std::condition_variable watcher;
-	bool resized{};
+	static bool& resized()
+	{
+		return StateProvider::instance()->is_resized;
+	}
+
+	static size_t getWinLines()
+	{
+		return StateProvider::instance()->lines;
+	}
+
+	static size_t getWinCols()
+	{
+		return StateProvider::instance()->cols;
+	}
+
 private:
-	WindowSizeProvider() = default;
+	StateProvider() = default;
+	size_t cols{}, lines{};
+	bool is_paused{}, is_resized{};
+	std::function<void( bool)> update_callback;
 };
 
-bool hasWindowResized( size_t ms)
+enum class Event
 {
-	auto instance = WindowSizeProvider::instance();
-	auto lock = std::unique_lock<std::mutex>( instance->mtx_resource);
-	auto status = instance->watcher.wait_for( lock, std::chrono::milliseconds( ms), [&instance]()
+	Resize,
+	Quit,
+	Pause,
+	NoOp
+};
+
+Event watchEvent( size_t ms)
+{
+	struct timeval timeout = { 0, static_cast<long>( ms * 1000)};
+	fd_set rfds;
+	FD_ZERO( &rfds);
+	FD_SET( STDIN_FILENO, &rfds);
+	if( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, &timeout) > 0 && FD_ISSET( STDIN_FILENO, &rfds))
 	{
-		return instance->resized;
-	});
-	if( status)
-		instance->resized = false;
-	return status;
+		int input = std::getchar();
+		if( input == 'q')
+			return Event::Quit;
+		else if( input == 'p')
+			return Event::Pause;
+	}
+	else if( StateProvider::resized())
+	{
+		StateProvider::resized() = false;
+		return Event::Resize;
+	}
+
+	return Event::NoOp;
 }
 
 class PuzzleSimulator
 {
 public:
-	virtual void simulate( std::ostream&) = 0;
+	virtual void simulate( std::ostream &, bool refresh_run) = 0;
 
 	void replaceSolver( const PuzzleSolver& solver)
 	{
@@ -74,22 +111,35 @@ public:
 	virtual ~PuzzleSimulator() = default;
 
 protected:
-	explicit PuzzleSimulator( PuzzleSolver solver, OptionParser  options)
+	explicit PuzzleSimulator(PuzzleSolver solver, OptionBuilder  options)
 		: _solver( std::move( solver)), _options( std::move( options))
 	{
 		_solver.solve();
 	}
 
 	PuzzleSolver _solver;
-	OptionParser _options;
+	OptionBuilder _options;
 };
 
 class TerminalPuzzleSimulator: public PuzzleSimulator
 {
 public:
-	explicit TerminalPuzzleSimulator( const PuzzleSolver& solver, const OptionParser& options)
+	explicit TerminalPuzzleSimulator( const PuzzleSolver& solver, const OptionBuilder& options)
 		: PuzzleSimulator( solver, options)
 	{
+		auto clone = _solver.puzzle();
+		puzzle.resize( clone.size());
+		std::transform( clone.cbegin(), clone.cend(), puzzle.begin(),
+		                []( const auto& str)
+		                {
+			                std::vector<char> inner( str.size());
+			                std::copy( str.cbegin(), str.cend(), inner.begin());
+			                return inner;
+		                });
+		words = _solver.words();
+		longest_size = std::max_element( _solver.matches().cbegin(), _solver.matches().cend(),
+                       []( auto& left, auto& right) { return left.word.size() < right.word.size();})
+		               ->word.size() + 2;
 	}
 
 	void setSimulatorSpeed( int fps )
@@ -97,73 +147,95 @@ public:
 		m_sim_speed = fps > 0 ? 1000 / fps : m_sim_speed;
 	}
 
-	void simulate( std::ostream& strm) override
+	void simulate( std::ostream &strm, bool refresh_run) override
 	{
-		auto clone = _solver.puzzle();
-		std::vector<std::vector<char>> puzzle( clone.size());
-		std::transform( clone.cbegin(), clone.cend(), puzzle.begin(),
-		               []( const auto& str )
-		                {
-			                std::vector<char> inner;
-			                for( const auto& elm : str )
-				                inner.emplace_back(elm);
-			                return inner;
-		                } );
-		auto words  = _solver.words();
 		auto matches = _solver.matches();
-		auto longest_size = std::max_element( matches.cbegin(), matches.cend(),
-						    []( auto& left, auto& right) { return left.word.size() < right.word.size();})
-							->word.size() + 2;
-		int last_x_pos{-1}, last_y_pos{-1};
-		char last_char{CHAR_MAX};
 		bool fast_forward = false;
-		std::unordered_map<std::string, int> color_selection;
-
 		std::vector<PuzzleSolver::underlying_type> base_order( matches.size());
 		std::copy( matches.cbegin(), matches.cend(), base_order.begin());
 		// Add a bit of un-determinism in the selection order
 		if( !_options.asBool( "predictable"))
 			std::shuffle( base_order.begin(), base_order.end(), std::random_device());
-		reset:
 		std::vector<PuzzleSolver::underlying_type> soln( base_order.size());
 		std::copy( base_order.cbegin(), base_order.cend(), soln.begin());
-		printf("\x1B[2J\x1B[H");    // Clear screen and move cursor to origin
-		auto adjustments = display( puzzle, words, strm);
-		auto n_lines = adjustments.first,
-			 padding = adjustments.second;
-		auto rem_lines = (int)WindowSizeProvider::getLines() - n_lines;
-		auto word_row = 0, word_col = 0;
-		auto n_cols = (int)WindowSizeProvider::getCols() / longest_size;
+
+		int n_lines, padding, rem_lines, word_row, word_col;
+		size_t n_cols;
+		auto populate = [&]()
+		{
+			printf("\x1B[2J\x1B[H");    // Clear screen and move cursor to origin
+			std::tie( n_lines, padding) = display( strm);
+			rem_lines = (int) StateProvider::getWinLines() - n_lines;
+			n_cols = (int) StateProvider::getWinCols() / longest_size;
+			word_row = word_col = 0;
+		};
+		populate();
 		// Disable buffering in terminal
-		setvbuf(stdout, nullptr, _IONBF, 0);
+		setvbuf( stdout, nullptr, _IONBF, 0);
 		// Save current cursor position
 		printf( "\x1B[s");
-		for( auto& m : soln )
+		bool reset;
+		for( auto b_soln = soln.begin(), e_soln = soln.end(); b_soln != e_soln; reset ? b_soln : ++b_soln)
 		{
+			auto m = *b_soln;
 			int color;  // Generate random color.
 			if( !color_selection[ m.word])
 				color = color_selection[ m.word] = 30 + randc();
 			else
 				color = color_selection[ m.word];
-			for( const auto& w : m.word )
+			reset = false;
+			for( auto b_w = b_soln->word.begin(), e_w = b_soln->word.end(); !reset && b_w != e_w; ++b_w)
 			{
+				auto w = *b_w;
 				printf( "\x1B[%d;%dH\x1B[%dm%c\x1B[0m\x1B", m.start.x + 1 + 2, 3 * m.start.y + padding,
 				        color, puzzle[ m.start.x][ m.start.y]);
-				if( fast_forward)
+				if( fast_forward || refresh_run)
 				{
 					if( last_char ==  w && last_x_pos == m.start.x && last_y_pos == m.start.y)
+					{
+						if( refresh_run)
+							return;
+
 						fast_forward = false;
+					}
 				}
-				else if( hasWindowResized( m_sim_speed))
+				else
 				{
-					fast_forward = true;
-					last_x_pos = m.start.x;
-					last_y_pos = m.start.y;
-					last_char  = w;
-					goto reset;
+					switch( watchEvent( m_sim_speed))
+					{
+						case Event::Resize:
+							fast_forward = reset = true;
+							last_x_pos = m.start.x;
+							last_y_pos = m.start.y;
+							last_char = w;
+							std::copy( base_order.cbegin(), base_order.cend(), soln.begin());
+							b_soln = soln.begin();
+							populate();
+							continue;
+						case Event::Quit:
+							exit( EXIT_SUCCESS);
+						case Event::Pause:
+						{
+							last_x_pos = m.start.x;
+							last_y_pos = m.start.y;
+							last_char = w;
+							StateProvider::paused() = true;
+							while( StateProvider::paused())
+							{
+								int input = std::getchar();
+								if( input == 'q')
+									exit( EXIT_SUCCESS);
+								else if( input == 'p')
+									StateProvider::paused() = false;
+							}
+							break;
+						}
+						case Event::NoOp:
+							break;
+					}
 				}
 
-				m.start = PuzzleSolver::next( m.dmatch )( m.start );
+				m.start = PuzzleSolver::next( m.dmatch )( m.start);
 			}
 			if( rem_lines > 0)
 			{
@@ -172,7 +244,7 @@ public:
 					.append( std::string( longest_size - m.word.size(), ' '));
 				printf( "\x1B[%d;%zuH\x1B[%dm%s", n_lines + (word_row % rem_lines),
 				        (( word_row > 0 && ( word_row % rem_lines == 0) ? ++word_col
-				        : word_col) % n_cols) * longest_size, color, current_word.c_str());
+				         : word_col) % n_cols) * longest_size, color, current_word.c_str());
 				++word_row;
 			}
 		}
@@ -181,11 +253,10 @@ public:
 	}
 
 private:
-	template <typename PuzzleContainer, typename WordContainer>
-	std::pair<int, int> display( const PuzzleContainer& puzzle, const WordContainer& words, std::ostream& strm )
+	std::pair<int, int> display( std::ostream& strm)
 	{
-		auto rows = WindowSizeProvider::getLines(),
-			 cols = WindowSizeProvider::getCols();
+		auto rows = StateProvider::getWinLines(),
+			 cols = StateProvider::getWinCols();
 		auto cols_padding = ((int)(cols - 3 * puzzle.size() + 1)) / 2;
 		if( 0 > cols_padding || puzzle.front().size() > rows)
 		{
@@ -194,14 +265,14 @@ private:
 		}
 		std::string heading( "Puzzle #1");
 		strm << std::setw((int)(cols - heading.size()) / 2) << "\x1B[4m" << heading << "\x1B[24m" <<"\n\n";
-		int n_lines = 2 + puzzle.size();
-		for( std::size_t i = 0, i_size = puzzle.size(); i < i_size; ++i )
+		auto n_lines = static_cast<int>( 2 + puzzle.size());
+		for( auto & makeup : puzzle)
 		{
 			strm << std::setw( cols_padding);
 			if( !_options.asBool( "matches-only"))
 			{
-				for( std::size_t j = 0, j_size = puzzle[ i].size(); j < j_size; ++j )
-					strm << puzzle[ i][ j] << ( j + 1 == j_size ? "" : "  ");
+				for(std::size_t j = 0, j_size = makeup.size(); j < j_size; ++j )
+					strm << makeup[ j] << ( j + 1 == j_size ? "" : "  ");
 			}
 			strm <<'\n';
 		}
@@ -226,7 +297,15 @@ private:
 		return dist( gen);
 	}
 
+	std::vector<std::vector<char>> puzzle;
+	std::vector<std::string> words;
+	std::unordered_map<std::string, int> color_selection;
+	size_t last_x_pos{ SIZE_MAX},
+		   last_y_pos{ SIZE_MAX},
+		   longest_size{};
+	char last_char{ CHAR_MAX};
 	int m_sim_speed = 1000/2;
+
 };
 
 #endif //PUZZLER_PUZZLE_SIMULATOR_HPP

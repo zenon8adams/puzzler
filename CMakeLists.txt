@@ -13,7 +13,7 @@ string(REGEX REPLACE "[0-9]+\\.[0-9]+\\.([0-9]+).*" "\\1" CPACK_PACKAGE_VERSION_
 set(PROJECT_VERSION ${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH})
 
 add_executable(puzzler main.cpp
-                       option_parser.hpp
+                       option-builder.hpp
                        puzzle-solver.hpp
                        puzzle-simulator.hpp
                        utility.hpp)
