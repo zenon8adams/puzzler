@@ -2,7 +2,11 @@ cmake_minimum_required(VERSION 3.15)
 project(puzzler)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -g3")
+if( $<CONFIG:Debug>)
+    set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -g3")
+else()
+set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -o2")
+endif()
 
 # Read the version information from the VERSION file
 file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" PACKAGE_VERSION)

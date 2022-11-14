@@ -120,6 +120,7 @@ int main( int argc, char *argv[])
 	else
 	{
 		fprintf( stderr, "Terminal not supported!");
+		std::getchar();
 		exit( 1);
 	}
 }

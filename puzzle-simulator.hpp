@@ -71,6 +71,7 @@ enum class Event
 	Resize,
 	Quit,
 	Pause,
+	Restart,
 	NoOp
 };
 
@@ -87,6 +88,8 @@ Event watchEvent( size_t ms)
 			return Event::Quit;
 		else if( input == 'p')
 			return Event::Pause;
+		else if( input == 'r')
+			return Event::Restart;
 	}
 	else if( StateProvider::resized())
 	{
@@ -101,13 +104,6 @@ class PuzzleSimulator
 {
 public:
 	virtual void simulate( std::ostream &, bool refresh_run) = 0;
-
-	void replaceSolver( const PuzzleSolver& solver)
-	{
-		_solver = solver;
-		_solver.solve();
-	}
-
 	virtual ~PuzzleSimulator() = default;
 
 protected:
@@ -170,6 +166,17 @@ public:
 			word_row = word_col = 0;
 		};
 		populate();
+
+		auto restart = [&]( auto& b_soln, auto& reset)
+		{
+			reset = true;
+			last_x_pos = last_y_pos = SIZE_MAX;
+			last_char = CHAR_MAX;
+			std::copy( base_order.cbegin(), base_order.cend(), soln.begin());
+			b_soln = soln.begin();
+			populate();
+		};
+
 		// Disable buffering in terminal
 		setvbuf( stdout, nullptr, _IONBF, 0);
 		// Save current cursor position
@@ -218,7 +225,7 @@ public:
 						{
 							last_x_pos = m.start.x;
 							last_y_pos = m.start.y;
-							last_char = w;
+							last_char  = w;
 							StateProvider::paused() = true;
 							while( StateProvider::paused())
 							{
@@ -227,9 +234,18 @@ public:
 									exit( EXIT_SUCCESS);
 								else if( input == 'p')
 									StateProvider::paused() = false;
+								else if( input == 'r')
+								{
+									StateProvider::paused() = false;
+									restart( b_soln, reset);
+									continue;
+								}
 							}
 							break;
 						}
+						case Event::Restart:
+							restart( b_soln, reset);
+							continue;
 						case Event::NoOp:
 							break;
 					}
@@ -237,7 +253,7 @@ public:
 
 				m.start = PuzzleSolver::next( m.dmatch )( m.start);
 			}
-			if( rem_lines > 0)
+			if( rem_lines > 0 && !reset)
 			{
 				// Display search complete indicator for word.
 				auto current_word = ( m.reversed ? reversed( m.word) : m.word)
@@ -253,6 +269,46 @@ public:
 	}
 
 private:
+
+#if defined( __GNUC__) || defined( __clang__)
+#define popcount8( x) __builtin_popcount( x)
+#else
+	#define popcount8(x)                                \
+        do {                                            \
+              uint8_t v = x;                            \
+              v = ( v & 0x55) << 1 | (( v >> 1) & 0x55); \
+              v = ( v & 0x33) << 1 | (( v >> 1) & 0x33); \
+              v = ( v & 0x0F) << 1 | (( v >> 1) & 0x0F); \
+        }while( 0);
+#endif
+
+	static int byteCount( uint8_t c)
+	{
+		// Check if leading byte is an ASCII character
+		if(( c & 0x80) != 0x80)
+			return 1;
+		// If not, reverse the byte
+		c =   ( c & 0x55) << 1 | ( c & 0xAA) >> 1;
+		c =   ( c & 0x33) << 2 | ( c & 0xCC) >> 2;
+		c = (( c & 0x0F) << 4  | ( c & 0xFF) >> 4);
+		// Mask out the continuous runs of ones in the leading byte( now trailing)
+		c = ( c ^ ( c + 1)) >> 1;
+		// Count the remaining bits in the byte.
+		return popcount8( c);
+	}
+
+	static size_t mb_strsize( const char *ps)
+	{
+		size_t iters = 0;
+		while( *ps)
+		{
+			ps += byteCount( *ps);
+			++iters;
+		}
+
+		return iters;
+	}
+
 	std::pair<int, int> display( std::ostream& strm)
 	{
 		auto rows = StateProvider::getWinLines(),
@@ -261,21 +317,46 @@ private:
 		if( 0 > cols_padding || puzzle.front().size() > rows)
 		{
 			fprintf( stdout, "Puzzle too large for your terminal");
+			getchar();
 			exit( 1);
 		}
 		std::string heading( "Puzzle #1");
 		strm << std::setw((int)(cols - heading.size()) / 2) << "\x1B[4m" << heading << "\x1B[24m" <<"\n\n";
 		auto n_lines = static_cast<int>( 2 + puzzle.size());
+		std::array control_info = {
+			"╭─────────────────────╮",
+			"│                     │",
+			"│      Controls       │",
+			"├───────────┬─────────┤",
+			"│     q     │    Quit │",
+			"├───────────┼─────────┤",
+			"│     r     │ Restart │",
+			"├───────────┼─────────┤",
+			"│     p     │   Pause │",
+			"╰───────────┴─────────╯"
+		};
+
 		for( auto & makeup : puzzle)
 		{
 			strm << std::setw( cols_padding);
 			if( !_options.asBool( "matches-only"))
 			{
-				for(std::size_t j = 0, j_size = makeup.size(); j < j_size; ++j )
+				for( std::size_t j = 0, j_size = makeup.size(); j < j_size; ++j )
 					strm << makeup[ j] << ( j + 1 == j_size ? "" : "  ");
 			}
 			strm <<'\n';
 		}
+
+		auto max_text_size = mb_strsize( control_info.front());
+		if( max_text_size < cols_padding && control_info.size() < puzzle.size())
+		{
+			auto v_align = ( 2 + puzzle.size() - control_info.size()) / 2,
+				 h_align = ( cols_padding - max_text_size) / 2;
+			for( size_t i = 0; i < control_info.size(); ++i)
+				printf( "\x1B[%lu;%ldH%s", v_align + i, h_align, control_info[ i]);
+			printf( "\x1B[%d;%dH", n_lines + 1, 0);
+		}
+
 		auto remaining_lines = (int)rows - (int)n_lines;
 		if( remaining_lines <= 0)
 		{

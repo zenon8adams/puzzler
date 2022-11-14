@@ -260,8 +260,12 @@ public:
 	PuzzleFileReader( const PuzzleFileReader& )           = delete;
 	auto getPuzzles()
 	{
-		parseFile();
-		std::call_once( m_parse_flag, [this]{  parseFile(); } );
+		if( !has_processed)
+		{
+			parseFile();
+			has_processed = true;
+		}
+
 		return m_puzzles;
 	}
 private:
@@ -338,7 +342,7 @@ private:
 	};
 	std::vector<PuzzleImage> m_puzzles;
 	std::istream& m_istrm;
-	std::once_flag m_parse_flag;
+	bool has_processed{};
 };
 
 #endif
