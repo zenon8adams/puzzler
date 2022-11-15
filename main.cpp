@@ -1,7 +1,6 @@
-#define __USE_POSIX199309
+#define _POSIX_C_SOURCE 199309L
 #include <cmath>
 #include <cstring>
-#include <mutex>
 #include <string>
 #include <algorithm>
 #include <deque>
@@ -31,8 +30,17 @@ static void refresh_before_exit( int signal)
 	printf("\x1B[?25h\x1B[2J"); // Clear screen
 	tcsetattr( STDIN_FILENO, TCSANOW, &orig_term_state);
 
+	// Turn-off focus control
+	printf( "\x1B[?1004l");
+
 	// exit() must not be called here to avoid infinite loop
 	_Exit( signal);
+}
+
+template<typename Pred, typename First, typename... Others>
+bool compareAnd( First base, Others... others)
+{
+	return ( ... && Pred()( base, others));
 }
 
 int main( int argc, char *argv[])
@@ -47,6 +55,9 @@ int main( int argc, char *argv[])
 		   .addOption( "file", "f")
 		   .addOption( "matches-only", "only", "no")
 		   .addOption( "predictable", "p", "no")
+		   .addOption( "wrap", "w", "yes")
+		   .addOption( "auto-next", "a", "no")
+		   .addOption( "reverse-solve", "r", "no")
 		   .build();
 
 	auto maybe_file = builder.asDefault("file");
@@ -103,19 +114,48 @@ int main( int argc, char *argv[])
 		raw_term_state.c_cc[ VERASE] = 0177;
 
 		tcsetattr( STDIN_FILENO, TCSANOW, &raw_term_state);
-		PuzzleSolver solver( response.front().puzzle, response.front().keys);
-		TerminalPuzzleSimulator term_simulator( solver, builder);
-		term_simulator.setSimulatorSpeed((int)builder.asInt("speed"));
-		StateProvider::registerWinUpdateCallback( [&term_simulator]( bool refresh)
+
+		// Turn-on focus control
+//		printf( "\x1B[?1004h");
+
+		auto step = builder.asBool( "reverse-solve") ? -1 : 1;
+		std::vector<std::unique_ptr<TerminalPuzzleSimulator>> sims( response.size());
+		auto g_begin = step == -1 ? --response.cend() : response.cbegin(),
+			 g_end   = step == -1 ? --response.begin() : response.cend();
+		for( auto begin = g_begin, end = g_end; begin != end;)
 		{
-			term_simulator.simulate( std::cout, refresh);
-		});
-		term_simulator.simulate( std::cout, false);
-		printf("\x1B[?25l");
-		while( std::getchar() != 'q')
-			;
-		printf("\x1B[?25h\x1B[2J"); // Clear screen
-		tcsetattr( STDIN_FILENO, TCSANOW, &orig_term_state);
+			auto puzzle_number = static_cast<int>( std::distance( response.cbegin(), begin) + 1);
+			PuzzleSolver solver( begin->puzzle, begin->keys);
+			if( !sims[ puzzle_number - 1])
+				sims[ puzzle_number - 1] = std::make_unique<TerminalPuzzleSimulator>( solver, builder);
+
+			auto& term_simulator = sims[ puzzle_number - 1];
+			term_simulator->setSimulatorSpeed((int)builder.asInt("speed"));
+			StateProvider::registerWinUpdateCallback( [&term_simulator, &puzzle_number]( bool refresh)
+			                                          {
+				                                          term_simulator->simulate( std::cout, puzzle_number, refresh);
+			                                          });
+			// Returns indication that this run completed.
+			auto status = term_simulator->simulate( std::cout, puzzle_number, false);
+			printf("\x1B[?25l");
+			int input{};
+			while( status == Conclusion::Finished  && !builder.asBool( "auto-next") &&
+			       compareAnd<std::not_equal_to<char>>( input = std::getchar(),
+				   Q( KEY_QUIT), Q( KEY_RESTART), Q( KEY_NEXT), Q( KEY_REWIND)))
+				;
+			if( status == Conclusion::Rewind || input == Q( KEY_REWIND))
+			{
+				begin = begin != g_begin ? begin - step
+						: builder.asBool( "wrap") ? g_end - step : begin;
+				continue;
+			}
+			else if( input == Q( KEY_RESTART))
+				continue;
+			else if( input == Q( KEY_QUIT))
+				exit( EXIT_SUCCESS);
+
+			begin = begin + step == g_end ? ( builder.asBool( "wrap") ? g_begin : begin) : begin + step;
+		}
 	}
 	else
 	{

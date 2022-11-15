@@ -8,16 +8,31 @@
 #include <iomanip>
 #include <climits>
 #include <utility>
+#include <list>
 #include "puzzle-solver.hpp"
 #include "option-builder.hpp"
+
+#define STRINGIFY_IMPL( cmd) #cmd
+#define STRINGIFY( cmd) STRINGIFY_IMPL( cmd)
+#define Q( value) ( *(STRINGIFY( value)))
+
+#define KEY_QUIT     q
+#define KEY_PAUSE    p
+#define KEY_RESTART  r
+#define KEY_NEXT     n
+#define KEY_REWIND   b
+
+
 
 class StateProvider
 {
 public:
-	static StateProvider *instance()
+	static StateProvider *instance( int index = 0)
 	{
-		static StateProvider provider;
-		return &provider;
+		static std::list<StateProvider> providers;
+		if( providers.size() <= index)
+			providers.emplace_back( StateProvider());
+		return ( index == 0 ? providers.begin() : std::next( providers.begin(), index)).operator->();
 	}
 
 	void setWinSize( size_t v_rows, size_t v_cols)
@@ -39,9 +54,9 @@ public:
 	   StateProvider::instance()->update_callback = cb;
 	}
 
-	static bool& paused()
+	bool &paused()
 	{
-		return StateProvider::instance()->is_paused;
+		return is_paused;
 	}
 
 	static bool& resized()
@@ -66,30 +81,54 @@ private:
 	std::function<void( bool)> update_callback;
 };
 
-enum class Event
+enum class  Event
 {
 	Resize,
 	Quit,
 	Pause,
 	Restart,
+	Focus,
+	Next,
+	Previous,
 	NoOp
 };
 
-Event watchEvent( size_t ms)
+enum class Conclusion
+{
+	Finished,
+	Rewind,
+	Forward
+};
+
+bool isReady( size_t ms)
 {
 	struct timeval timeout = { 0, static_cast<long>( ms * 1000)};
 	fd_set rfds;
-	FD_ZERO( &rfds);
-	FD_SET( STDIN_FILENO, &rfds);
-	if( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, &timeout) > 0 && FD_ISSET( STDIN_FILENO, &rfds))
+	FD_ZERO(&rfds);
+	FD_SET(STDIN_FILENO, &rfds);
+	if ( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, &timeout) > 0 && FD_ISSET( STDIN_FILENO, &rfds))
+		return true;
+
+	return false;
+}
+
+Event watchEvent( size_t ms)
+{
+	if( isReady( ms))
 	{
 		int input = std::getchar();
-		if( input == 'q')
+		if( input == Q( KEY_QUIT))
 			return Event::Quit;
-		else if( input == 'p')
+		else if( input == Q( KEY_PAUSE))
 			return Event::Pause;
-		else if( input == 'r')
+		else if( input == Q( KEY_RESTART))
 			return Event::Restart;
+		else if( input == '\x1B')
+			return Event::Focus;
+		else if( input == Q( KEY_NEXT))
+			return Event::Next;
+		else if(input == Q( KEY_REWIND))
+			return Event::Previous;
 	}
 	else if( StateProvider::resized())
 	{
@@ -103,7 +142,7 @@ Event watchEvent( size_t ms)
 class PuzzleSimulator
 {
 public:
-	virtual void simulate( std::ostream &, bool refresh_run) = 0;
+	virtual Conclusion simulate( std::ostream &, int puzzle_number, bool refresh_run) = 0;
 	virtual ~PuzzleSimulator() = default;
 
 protected:
@@ -143,10 +182,10 @@ public:
 		m_sim_speed = fps > 0 ? 1000 / fps : m_sim_speed;
 	}
 
-	void simulate( std::ostream &strm, bool refresh_run) override
+	Conclusion simulate( std::ostream &strm, int puzzle_number, bool refresh_run) override
 	{
+		auto state_provider = StateProvider::instance( puzzle_number - 1);
 		auto matches = _solver.matches();
-		bool fast_forward = false;
 		std::vector<PuzzleSolver::underlying_type> base_order( matches.size());
 		std::copy( matches.cbegin(), matches.cend(), base_order.begin());
 		// Add a bit of un-determinism in the selection order
@@ -160,7 +199,7 @@ public:
 		auto populate = [&]()
 		{
 			printf("\x1B[2J\x1B[H");    // Clear screen and move cursor to origin
-			std::tie( n_lines, padding) = display( strm);
+			std::tie( n_lines, padding) = display( strm, puzzle_number);
 			rem_lines = (int) StateProvider::getWinLines() - n_lines;
 			n_cols = (int) StateProvider::getWinCols() / longest_size;
 			word_row = word_col = 0;
@@ -175,6 +214,29 @@ public:
 			std::copy( base_order.cbegin(), base_order.cend(), soln.begin());
 			b_soln = soln.begin();
 			populate();
+		};
+
+		auto freeze = [&]( auto& b_soln, auto& reset)
+		{
+			while( state_provider->paused())
+			{
+				int input = std::getchar();
+				if( input == Q( KEY_QUIT))
+					exit( EXIT_SUCCESS);
+				else if( input == Q( KEY_PAUSE))
+					state_provider->paused() = false;
+				else if( input == Q( KEY_RESTART))
+				{
+					state_provider->paused() = false;
+					restart( b_soln, reset);
+				}
+				else if( input == Q( KEY_NEXT) || input == Q( KEY_REWIND))
+				{
+					fast_forward = state_provider->paused();
+					return input == Q( KEY_NEXT) ? Conclusion::Forward : Conclusion::Rewind;
+				}
+			}
+			return Conclusion::Finished;
 		};
 
 		// Disable buffering in terminal
@@ -201,13 +263,18 @@ public:
 					if( last_char ==  w && last_x_pos == m.start.x && last_y_pos == m.start.y)
 					{
 						if( refresh_run)
-							return;
+							return Conclusion::Rewind;
 
 						fast_forward = false;
 					}
 				}
 				else
 				{
+					{
+						auto result = freeze( b_soln, reset);
+						if ( result != Conclusion::Finished)
+							return result;
+					}
 					switch( watchEvent( m_sim_speed))
 					{
 						case Event::Resize:
@@ -226,26 +293,37 @@ public:
 							last_x_pos = m.start.x;
 							last_y_pos = m.start.y;
 							last_char  = w;
-							StateProvider::paused() = true;
-							while( StateProvider::paused())
-							{
-								int input = std::getchar();
-								if( input == 'q')
-									exit( EXIT_SUCCESS);
-								else if( input == 'p')
-									StateProvider::paused() = false;
-								else if( input == 'r')
-								{
-									StateProvider::paused() = false;
-									restart( b_soln, reset);
-									continue;
-								}
-							}
+							state_provider->paused() = true;
+							auto result = freeze( b_soln, reset);
+							if( result != Conclusion::Finished)
+								return result;
 							break;
 						}
 						case Event::Restart:
 							restart( b_soln, reset);
 							continue;
+						case Event::Focus:
+						{
+							/*char remaining[ 3]{};
+							if( read( STDIN_FILENO, remaining, 2) == 2)
+							{
+								if( strcmp( remaining, "[I") == 0)
+									StateProvider::paused() = false;
+								else if( strcmp( remaining, "[O") == 0)
+								{
+									last_x_pos = m.start.x;
+									last_y_pos = m.start.y;
+									last_char  = w;
+									StateProvider::paused() = true;
+								}
+								freeze( b_soln, reset);
+							}*/
+							break;
+						}
+						case Event::Next:
+							return Conclusion::Forward;
+						case Event::Previous:
+							return Conclusion::Rewind;
 						case Event::NoOp:
 							break;
 					}
@@ -266,6 +344,8 @@ public:
 		}
 		// We are done! Restore cursor position
 		printf("\x1B[u");
+
+		return Conclusion::Finished;
 	}
 
 private:
@@ -309,7 +389,7 @@ private:
 		return iters;
 	}
 
-	std::pair<int, int> display( std::ostream& strm)
+	std::pair<int, int> display( std::ostream& strm, int puzzle_number = 1)
 	{
 		auto rows = StateProvider::getWinLines(),
 			 cols = StateProvider::getWinCols();
@@ -318,21 +398,27 @@ private:
 		{
 			fprintf( stdout, "Puzzle too large for your terminal");
 			getchar();
-			exit( 1);
+			exit( EXIT_FAILURE);
 		}
-		std::string heading( "Puzzle #1");
-		strm << std::setw((int)(cols - heading.size()) / 2) << "\x1B[4m" << heading << "\x1B[24m" <<"\n\n";
+		std::string heading( "Puzzle #" + std::to_string( puzzle_number));
+		strm << std::setw((int)(cols - heading.size()) / 2)
+			 << "\x1B[4m" << heading << "\x1B[24m" <<"\n\n";
 		auto n_lines = static_cast<int>( 2 + puzzle.size());
 		std::array control_info = {
 			"╭─────────────────────╮",
 			"│                     │",
-			"│      Controls       │",
+			"│        Controls     │",
+			"│                     │",
 			"├───────────┬─────────┤",
-			"│     q     │    Quit │",
+			"│     " STRINGIFY( KEY_QUIT) "     │    Quit │",
 			"├───────────┼─────────┤",
-			"│     r     │ Restart │",
+			"│     " STRINGIFY( KEY_RESTART) "     │ Restart │",
 			"├───────────┼─────────┤",
-			"│     p     │   Pause │",
+			"│     " STRINGIFY( KEY_NEXT) "     │    Next │",
+			"├───────────┼─────────┤",
+			"│     " STRINGIFY( KEY_REWIND) "     │  Rewind │",
+			"├───────────┼─────────┤",
+			"│     " STRINGIFY( KEY_PAUSE) "     │   Pause │",
 			"╰───────────┴─────────╯"
 		};
 
@@ -348,9 +434,9 @@ private:
 		}
 
 		auto max_text_size = mb_strsize( control_info.front());
-		if( max_text_size < cols_padding && control_info.size() < puzzle.size())
+		if( max_text_size < cols_padding && control_info.size() < ( puzzle.size() + 4))
 		{
-			auto v_align = ( 2 + puzzle.size() - control_info.size()) / 2,
+			auto v_align = ( 4 + puzzle.size() - control_info.size()) / 2,
 				 h_align = ( cols_padding - max_text_size) / 2;
 			for( size_t i = 0; i < control_info.size(); ++i)
 				printf( "\x1B[%lu;%ldH%s", v_align + i, h_align, control_info[ i]);
@@ -384,6 +470,7 @@ private:
 	size_t last_x_pos{ SIZE_MAX},
 		   last_y_pos{ SIZE_MAX},
 		   longest_size{};
+	bool fast_forward{};
 	char last_char{ CHAR_MAX};
 	int m_sim_speed = 1000/2;
 
