@@ -1,0 +1,5 @@
+DESCRIPTION
+===========
+
+Welcome to copywrite installer. Please follow instructions for a successful installation. Thanks.
+
