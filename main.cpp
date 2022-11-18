@@ -4,12 +4,15 @@
 #include <string>
 #include <algorithm>
 #include <deque>
+#include <cstdlib>
 #include <csignal>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 #include "puzzle-simulator.hpp"
 #include "option-builder.hpp"
+
+#define NOT_SET  nullptr
 
 static void resize_handler( int signal)
 {
@@ -51,24 +54,32 @@ int main( int argc, char *argv[])
 	{
 		puzzle_file = option;
 	});
-	builder.addOption( "speed", "s", "1")
-		   .addOption( "file", "f")
-		   .addOption( "matches-only", "only", "no")
-		   .addOption( "predictable", "p", "no")
-		   .addOption( "wrap", "w", "yes")
-		   .addOption( "auto-next", "a", "no")
-		   .addOption( "reverse-solve", "r", "no")
+
+	builder.addOption("help", "h", NOT_SET, "Show this page.")
+		   .addOption("speed", "s", "1", "Set the simulation speed for the solver.")
+		   .addOption( "file", "f", "Set the file containing the puzzle.")
+		   .addOption( "matches-only", "only", "no", "Display matched words only.")
+		   .addOption( "predictable", "p", "no", "Randomize the puzzle solution on every run.")
+		   .addOption( "wrap", "w", "yes",
+					   "The forward and rewind button switches to first and last on reaching the end.")
+		   .addOption( "auto-next", "a", "no", "Press `next` before next puzzle is run.")
+		   .addOption( "reverse-solve", "r", "no", "Reverse the effect of forward and rewind button.")
 		   .build();
 
-	auto maybe_file = builder.asDefault("file");
+	if( !builder.asDefault( "help").empty())
+	{
+		builder.showHelp();
+		exit( EXIT_SUCCESS);
+	}
+
+	auto maybe_file = builder.asDefault( "file");
 	if( !maybe_file.empty())
 		puzzle_file = maybe_file.data();
 
 	if( puzzle_file == nullptr)
 	{
-		//TODO: Show help
-		fprintf( stderr, "Usage: %s puzzle-file\n", *argv);
-		exit( 1);
+		builder.showHelp();
+		exit( EXIT_FAILURE);
 	}
 
 	auto scope = std::ifstream( puzzle_file);
@@ -116,7 +127,7 @@ int main( int argc, char *argv[])
 		tcsetattr( STDIN_FILENO, TCSANOW, &raw_term_state);
 
 		// Turn-on focus control
-//		printf( "\x1B[?1004h");
+		printf( "\x1B[?1004h");
 
 		auto step = builder.asBool( "reverse-solve") ? -1 : 1;
 		std::vector<std::unique_ptr<TerminalPuzzleSimulator>> sims( response.size());

@@ -74,10 +74,16 @@ public:
 		return StateProvider::instance()->cols;
 	}
 
+	static bool& firstFocus()
+	{
+		return StateProvider::instance()->is_first_focus;
+	}
+
 private:
 	StateProvider() = default;
 	size_t cols{}, lines{};
-	bool is_paused{}, is_resized{};
+	bool is_paused{}, is_resized{},
+	     is_first_focus{ true};
 	std::function<void( bool)> update_callback;
 };
 
@@ -104,9 +110,9 @@ bool isReady( size_t ms)
 {
 	struct timeval timeout = { 0, static_cast<long>( ms * 1000)};
 	fd_set rfds;
-	FD_ZERO(&rfds);
-	FD_SET(STDIN_FILENO, &rfds);
-	if ( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, &timeout) > 0 && FD_ISSET( STDIN_FILENO, &rfds))
+	FD_ZERO( &rfds);
+	FD_SET( STDIN_FILENO, &rfds);
+	if ( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, ms == 0 ? nullptr : &timeout) > 0 && FD_ISSET( STDIN_FILENO, &rfds))
 		return true;
 
 	return false;
@@ -236,6 +242,7 @@ public:
 					return input == Q( KEY_NEXT) ? Conclusion::Forward : Conclusion::Rewind;
 				}
 			}
+
 			return Conclusion::Finished;
 		};
 
@@ -249,7 +256,7 @@ public:
 			auto m = *b_soln;
 			int color;  // Generate random color.
 			if( !color_selection[ m.word])
-				color = color_selection[ m.word] = 30 + randc();
+				color = color_selection[ m.word] = 30 + TerminalPuzzleSimulator::random_color();
 			else
 				color = color_selection[ m.word];
 			reset = false;
@@ -304,20 +311,22 @@ public:
 							continue;
 						case Event::Focus:
 						{
-							/*char remaining[ 3]{};
-							if( read( STDIN_FILENO, remaining, 2) == 2)
+							char remaining[ 3]{};
+							// The first focus is a false trigger. Discard it.
+							if( !StateProvider::firstFocus() && read( STDIN_FILENO, remaining, 2) == 2)
 							{
 								if( strcmp( remaining, "[I") == 0)
-									StateProvider::paused() = false;
+									state_provider->paused() = false;
 								else if( strcmp( remaining, "[O") == 0)
 								{
 									last_x_pos = m.start.x;
 									last_y_pos = m.start.y;
 									last_char  = w;
-									StateProvider::paused() = true;
+									state_provider->paused() = true;
+									freeze( b_soln, reset);
 								}
-								freeze( b_soln, reset);
-							}*/
+							}
+							StateProvider::firstFocus() = false;
 							break;
 						}
 						case Event::Next:
@@ -456,7 +465,7 @@ private:
 		return { n_lines, cols_padding};
 	}
 
-	static int randc()
+	static int random_color()
 	{
 		static std::random_device dev;
 		static std::mt19937_64 gen( dev());

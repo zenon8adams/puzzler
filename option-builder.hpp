@@ -7,8 +7,8 @@
 class OptionBuilder
 {
 public:
-	OptionBuilder(int ac, char **av)
-		: argc( ac), argv( av)
+	OptionBuilder( int ac, char **av)
+		: argv( av), argc( ac)
 	{
 	}
 
@@ -94,9 +94,10 @@ public:
 	}
 
 	OptionBuilder& addOption( const char *long_key, const char *short_key = nullptr,
-							  const char *default_value = nullptr, int n_args = 1)
+							  const char *default_value = nullptr, const char *help_string = nullptr, int n_args = 1)
 	{
 		options[ long_key] = n_args;
+		long_options.emplace_back( long_key);
 		if( short_key != nullptr)
 		{
 			options[ short_key] = n_args;
@@ -108,13 +109,57 @@ public:
 		if( default_value != nullptr)
 			options_default[ long_key] = default_value;
 
+		if( help_string != nullptr)
+			options_help[ long_key] = help_string;
+
 		return *this;
 	}
 
+	void showHelp() const
+	{
+		printf( "Usage: %s [OPTIONS...] puzzle-file\n\n", APP_NAME);
+		size_t max_long_option_length = 0;
+		for( auto& long_option : long_options)
+			max_long_option_length = std::max( max_long_option_length, long_option.size());
+
+		size_t max_short_option_length = 0;
+		for( auto& option : long_options)
+		{
+			auto pair_iter = option_pair.find( option);
+			if( pair_iter == option_pair.cend())
+				continue;
+
+			max_short_option_length = std::max( max_short_option_length, pair_iter->second.size());
+		}
+
+		const size_t max_hypens = 2, separation = 3;
+		auto alignment = max_long_option_length + max_hypens + max_short_option_length + max_hypens - 1 + separation;
+		for( auto& long_option : long_options)
+		{
+			auto help_iter = options_help.find( long_option);
+			if( help_iter == options_help.cend())
+				continue;
+
+			std::string_view short_option;
+			auto short_option_iter = option_pair.find( long_option);
+			if( short_option_iter != option_pair.cend())
+				short_option = short_option_iter->second;
+
+			std::cout << std::string( max_hypens, '-') << long_option;
+			if( !short_option.empty())
+				std::cout << ", " << std::string( max_hypens - 1, '-') << short_option;
+			auto padding = std::string( alignment - max_hypens - ( int)long_option.size() - ( int)short_option.size()
+										- (!short_option.empty()) * ( max_hypens - 1 + 2), ' ');
+			std::cout << padding << help_iter->second <<'\n';
+		}
+	}
+
+	std::vector<std::string_view> long_options;
 	std::unordered_map<std::string_view, size_t> options;
 	std::unordered_map<std::string_view, std::string_view> option_pair;
 	std::unordered_map<std::string_view, std::vector<std::string_view>> matched_options;
 	std::unordered_map<std::string_view, std::string_view> options_default;
+	std::unordered_map<std::string_view, std::string_view> options_help;
 	char **argv;
 	int argc;
 	std::function<void(const char *)> mis_handler;
