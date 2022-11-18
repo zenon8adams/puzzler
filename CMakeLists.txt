@@ -24,5 +24,5 @@ add_executable(${APP_NAME} main.cpp
 target_compile_definitions(${APP_NAME} PUBLIC APP_NAME="${APP_NAME}")
 
 include(GNUInstallDirs)
-install(TARGETS ${APP_NAME} CONFIGURATIONS Release RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS ${APP_NAME} CONFIGURATIONS Release RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT application)
 add_subdirectory(packaging)

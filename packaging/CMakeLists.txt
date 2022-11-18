@@ -6,6 +6,7 @@ set(CPACK_PACKAGE_VENDOR "zenon8adams")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
 set(CPACK_VERBATIM_VARIABLES YES)
 set(CPACK_PACKAGE_DESCRIPTION [[
+
     This is a tool for solving search word puzzles
     © Meekness Adesina 2022.
 ]])
