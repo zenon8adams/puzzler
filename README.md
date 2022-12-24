@@ -8,7 +8,7 @@ Run:
 ```sh
 mkdir cmake-build
 cd cmake-build
-cmake ...
+cmake ..
 cmake --build .
 ```
 ## Note
