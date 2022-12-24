@@ -30,7 +30,7 @@ static void refresh_before_exit( int signal)
 	if( orig_term_state.c_iflag == 0)
 		return;
 
-	printf("\x1B[?25h\x1B[2J"); // Clear screen
+	fprintf( stderr, "\x1B[?25h\x1B[2J\x1B[0;0H"); // Clear screen
 	tcsetattr( STDIN_FILENO, TCSANOW, &orig_term_state);
 
 	// Turn-off focus control
@@ -48,9 +48,9 @@ bool compareAnd( First base, Others... others)
 
 int main( int argc, char *argv[])
 {
-	const char *puzzle_file = nullptr;
+	const char *puzzle_file = NOT_SET;
 	OptionBuilder builder( argc, argv);
-	builder.addMismatchConsumer([&](const char *option)
+	builder.addMismatchConsumer([ &]( const char *option)
 	{
 		puzzle_file = option;
 	});
@@ -99,14 +99,14 @@ int main( int argc, char *argv[])
 
 	struct sigaction resize_action{};
 	resize_action.sa_handler = resize_handler;
-	sigaction( SIGWINCH, &resize_action, nullptr);
+	sigaction( SIGWINCH, &resize_action, NOT_SET);
 	raise( SIGWINCH);   // Get current window size.
 	// If $LINES and $COLUMNS is non-zero, terminal supports cursor motion.
 	if(StateProvider::getWinLines() && StateProvider::getWinCols())
 	{
 		struct sigaction refresh_action{};
 		refresh_action.sa_handler = refresh_before_exit;
-		sigaction( SIGINT, &refresh_action, nullptr);
+		sigaction( SIGINT, &refresh_action, NOT_SET);
 		atexit( [] { refresh_before_exit( EXIT_SUCCESS);});
 
 		struct termios raw_term_state{};

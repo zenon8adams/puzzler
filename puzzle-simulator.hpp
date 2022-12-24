@@ -20,7 +20,7 @@
 #define KEY_PAUSE    p
 #define KEY_RESTART  r
 #define KEY_NEXT     n
-#define KEY_REWIND   b
+#define KEY_PREVIOUS   b
 
 
 
@@ -112,7 +112,8 @@ bool isReady( size_t ms)
 	fd_set rfds;
 	FD_ZERO( &rfds);
 	FD_SET( STDIN_FILENO, &rfds);
-	if ( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, ms == 0 ? nullptr : &timeout) > 0 && FD_ISSET( STDIN_FILENO, &rfds))
+	if( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, ms == 0 ? nullptr : &timeout) > 0
+		&& FD_ISSET( STDIN_FILENO, &rfds))
 		return true;
 
 	return false;
@@ -133,7 +134,7 @@ Event watchEvent( size_t ms)
 			return Event::Focus;
 		else if( input == Q( KEY_NEXT))
 			return Event::Next;
-		else if(input == Q( KEY_REWIND))
+		else if(input == Q( KEY_PREVIOUS))
 			return Event::Previous;
 	}
 	else if( StateProvider::resized())
@@ -178,9 +179,9 @@ public:
 			                return inner;
 		                });
 		words = _solver.words();
-		longest_size = std::max_element( _solver.matches().cbegin(), _solver.matches().cend(),
+		longest_size = static_cast<int>( std::max_element( _solver.matches().cbegin(), _solver.matches().cend(),
                        []( auto& left, auto& right) { return left.word.size() < right.word.size();})
-		               ->word.size() + 2;
+		               ->word.size()) + 2;
 	}
 
 	void setSimulatorSpeed( int fps )
@@ -215,7 +216,7 @@ public:
 		auto restart = [&]( auto& b_soln, auto& reset)
 		{
 			reset = true;
-			last_x_pos = last_y_pos = SIZE_MAX;
+			last_x_pos = last_y_pos = NEG_INF;
 			last_char = CHAR_MAX;
 			std::copy( base_order.cbegin(), base_order.cend(), soln.begin());
 			b_soln = soln.begin();
@@ -236,7 +237,7 @@ public:
 					state_provider->paused() = false;
 					restart( b_soln, reset);
 				}
-				else if( input == Q( KEY_NEXT) || input == Q( KEY_REWIND))
+				else if( input == Q( KEY_NEXT) || input == Q( KEY_PREVIOUS))
 				{
 					fast_forward = state_provider->paused();
 					return input == Q( KEY_NEXT) ? Conclusion::Forward : Conclusion::Rewind;
@@ -404,31 +405,28 @@ private:
 			 cols = StateProvider::getWinCols();
 		auto cols_padding = ((int)(cols - 3 * puzzle.size() + 1)) / 2;
 		if( 0 > cols_padding || puzzle.front().size() > rows)
-		{
-			fprintf( stdout, "Puzzle too large for your terminal");
-			getchar();
-			exit( EXIT_FAILURE);
-		}
+			panic_exit();
+
 		std::string heading( "Puzzle #" + std::to_string( puzzle_number));
 		strm << std::setw((int)(cols - heading.size()) / 2)
 			 << "\x1B[4m" << heading << "\x1B[24m" <<"\n\n";
 		auto n_lines = static_cast<int>( 2 + puzzle.size());
 		std::array control_info = {
-			"╭─────────────────────╮",
-			"│                     │",
-			"│        Controls     │",
-			"│                     │",
-			"├───────────┬─────────┤",
-			"│     " STRINGIFY( KEY_QUIT) "     │    Quit │",
-			"├───────────┼─────────┤",
-			"│     " STRINGIFY( KEY_RESTART) "     │ Restart │",
-			"├───────────┼─────────┤",
-			"│     " STRINGIFY( KEY_NEXT) "     │    Next │",
-			"├───────────┼─────────┤",
-			"│     " STRINGIFY( KEY_REWIND) "     │  Rewind │",
-			"├───────────┼─────────┤",
-			"│     " STRINGIFY( KEY_PAUSE) "     │   Pause │",
-			"╰───────────┴─────────╯"
+			"╭──────────────────────╮",
+			"│                      │",
+			"│        Controls      │",
+			"│                      │",
+			"├───────────┬──────────┤",
+			"│     " STRINGIFY( KEY_QUIT) "     │     Quit │",
+			"├───────────┼──────────┤",
+			"│     " STRINGIFY( KEY_RESTART) "     │  Restart │",
+			"├───────────┼──────────┤",
+			"│     " STRINGIFY( KEY_NEXT) "     │     Next │",
+			"├───────────┼──────────┤",
+			"│     " STRINGIFY( KEY_PREVIOUS) "     │ Previous │",
+			"├───────────┼──────────┤",
+			"│     " STRINGIFY( KEY_PAUSE) "     │    Pause │",
+			"╰───────────┴──────────╯"
 		};
 
 		for( auto & makeup : puzzle)
@@ -442,27 +440,39 @@ private:
 			strm <<'\n';
 		}
 
-		auto max_text_size = mb_strsize( control_info.front());
+		auto max_text_size = static_cast<int>( mb_strsize( control_info.front()));
 		if( max_text_size < cols_padding && control_info.size() < ( puzzle.size() + 4))
 		{
-			auto v_align = ( 4 + puzzle.size() - control_info.size()) / 2,
+			auto v_align = ( 4 + static_cast<int>( puzzle.size()) - static_cast<int>( control_info.size())) / 2,
 				 h_align = ( cols_padding - max_text_size) / 2;
 			for( size_t i = 0; i < control_info.size(); ++i)
-				printf( "\x1B[%lu;%ldH%s", v_align + i, h_align, control_info[ i]);
+				printf( "\x1B[%lu;%dH%s", v_align + i, h_align, control_info[ i]);
 			printf( "\x1B[%d;%dH", n_lines + 1, 0);
 		}
 
 		auto remaining_lines = (int)rows - (int)n_lines;
 		if( remaining_lines <= 0)
-		{
-			fprintf( stdout, "Puzzle too large for your terminal");
-			exit( 1);
-		}
+			panic_exit();
 
 		if( remaining_lines - 4 > 0)
 			strm << "\n\n\x1B[4m\x1B[1mFound Words\x1B[24m\x1B[22m:";
 		n_lines += 4;
 		return { n_lines, cols_padding};
+	}
+
+	static void panic_exit()
+	{
+		const auto win_width = StateProvider::getWinCols();
+		const auto half_win_height = StateProvider::getWinLines() / 2;
+		constexpr std::string_view main_message = "Puzzle too large for your terminal",
+								   exit_message = "Press ENTER to exit";
+		fprintf( stderr, "\x1B[?25l\x1B[%ld;%ldH\x1B[31m%s\x1B[0m", half_win_height,
+				 ( win_width - main_message.size()) / 2, main_message.data());
+		fprintf( stderr, "\x1B[%ld;%ldH\x1B[31m%s\x1B[0m", half_win_height + 1,
+		         ( win_width - exit_message.size()) / 2, exit_message.data());
+		while( getchar() != '\n')
+			;
+		exit( EXIT_FAILURE);
 	}
 
 	static int random_color()
@@ -476,9 +486,9 @@ private:
 	std::vector<std::vector<char>> puzzle;
 	std::vector<std::string> words;
 	std::unordered_map<std::string, int> color_selection;
-	size_t last_x_pos{ SIZE_MAX},
-		   last_y_pos{ SIZE_MAX},
-		   longest_size{};
+	int last_x_pos{ NEG_INF},
+		last_y_pos{ NEG_INF},
+		longest_size{};
 	bool fast_forward{};
 	char last_char{ CHAR_MAX};
 	int m_sim_speed = 1000/2;
