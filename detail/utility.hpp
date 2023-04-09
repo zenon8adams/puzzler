@@ -5,19 +5,28 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <limits>
 
-#define NEG_INF -1000000
+#define NEG_INF std::numeric_limits<int>::min()
 
-enum Dir
+namespace detail
+{
+
+enum class Dir
 {
 	NL,
 	NT, ST, WT, ET,
 	NE, SW, NW, SE
 };
 
-std::string reversed( const std::string& s )
+namespace util
+{
+
+inline std::string reversed( const std::string& s )
 {
 	return { s.crbegin(), s.crend() };
+}
+}
 }
 
 #endif
