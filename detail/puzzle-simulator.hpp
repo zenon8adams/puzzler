@@ -9,6 +9,8 @@
 #include <climits>
 #include <utility>
 #include <list>
+#include <sys/epoll.h>
+#include <cassert>
 #include "puzzle-solver.hpp"
 #include "option-builder.hpp"
 
@@ -20,19 +22,21 @@
 #define KEY_PAUSE    p
 #define KEY_RESTART  r
 #define KEY_NEXT     n
-#define KEY_PREVIOUS   b
+#define KEY_PREVIOUS b
 
+namespace detail
+{
 
-
-class StateProvider
+class EventDog
 {
 public:
-	static StateProvider *instance( int index = 0)
+	static EventDog *instance( size_t index = 0)
 	{
-		static std::list<StateProvider> providers;
+		static std::list<EventDog> providers;
 		if( providers.size() <= index)
-			providers.emplace_back( StateProvider());
-		return ( index == 0 ? providers.begin() : std::next( providers.begin(), index)).operator->();
+			providers.emplace_back( EventDog{});
+		return ( index == 0 ? providers.begin() 
+                : std::next( providers.begin(), static_cast<long>( index))).operator->();
 	}
 
 	void setWinSize( size_t v_rows, size_t v_cols)
@@ -41,7 +45,7 @@ public:
 		cols = v_cols;
 		lines = v_rows;
 		if( !initial_run)
-			StateProvider::resized() = true;
+			EventDog::resized() = true;
 
 		if( update_callback)
 			update_callback( true);
@@ -51,7 +55,7 @@ public:
 
 	static void registerWinUpdateCallback( const std::function<void( bool)>& cb)
 	{
-	   StateProvider::instance()->update_callback = cb;
+		EventDog::instance()->update_callback = cb;
 	}
 
 	bool &paused()
@@ -61,26 +65,36 @@ public:
 
 	static bool& resized()
 	{
-		return StateProvider::instance()->is_resized;
+		return EventDog::instance()->is_resized;
 	}
 
 	static size_t getWinLines()
 	{
-		return StateProvider::instance()->lines;
+		return EventDog::instance()->lines;
 	}
 
 	static size_t getWinCols()
 	{
-		return StateProvider::instance()->cols;
+		return EventDog::instance()->cols;
 	}
 
 	static bool& firstFocus()
 	{
-		return StateProvider::instance()->is_first_focus;
+		return EventDog::instance()->is_first_focus;
+	}
+
+	static bool isReady( int ms)
+	{
+		struct timeval timeout = { 0, static_cast<long>( ms * 1000)};
+		fd_set rfds;
+		FD_ZERO( &rfds);
+		FD_SET( STDIN_FILENO, &rfds);
+		return ( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, ms == 0 ? nullptr : &timeout) > 0
+		         && FD_ISSET( STDIN_FILENO, &rfds));
 	}
 
 private:
-	StateProvider() = default;
+	EventDog() = default;
 	size_t cols{}, lines{};
 	bool is_paused{}, is_resized{},
 	     is_first_focus{ true};
@@ -106,22 +120,9 @@ enum class Conclusion
 	Forward
 };
 
-bool isReady( size_t ms)
+inline Event watchEvent( int ms)
 {
-	struct timeval timeout = { 0, static_cast<long>( ms * 1000)};
-	fd_set rfds;
-	FD_ZERO( &rfds);
-	FD_SET( STDIN_FILENO, &rfds);
-	if( select( STDIN_FILENO + 1, &rfds, nullptr, nullptr, ms == 0 ? nullptr : &timeout) > 0
-		&& FD_ISSET( STDIN_FILENO, &rfds))
-		return true;
-
-	return false;
-}
-
-Event watchEvent( size_t ms)
-{
-	if( isReady( ms))
+	if( EventDog::isReady( ms))
 	{
 		int input = std::getchar();
 		if( input == Q( KEY_QUIT))
@@ -137,36 +138,38 @@ Event watchEvent( size_t ms)
 		else if(input == Q( KEY_PREVIOUS))
 			return Event::Previous;
 	}
-	else if( StateProvider::resized())
+	else if( EventDog::resized())
 	{
-		StateProvider::resized() = false;
+		EventDog::resized() = false;
 		return Event::Resize;
 	}
 
 	return Event::NoOp;
 }
 
+}
+
 class PuzzleSimulator
 {
 public:
-	virtual Conclusion simulate( std::ostream &, int puzzle_number, bool refresh_run) = 0;
+	virtual detail::Conclusion simulate( std::ostream &, size_t puzzle_number, bool refresh_run) = 0;
 	virtual ~PuzzleSimulator() = default;
 
 protected:
-	explicit PuzzleSimulator(PuzzleSolver solver, OptionBuilder  options)
+	explicit PuzzleSimulator(PuzzleSolver solver, detail::OptionBuilder  options)
 		: _solver( std::move( solver)), _options( std::move( options))
 	{
 		_solver.solve();
 	}
 
 	PuzzleSolver _solver;
-	OptionBuilder _options;
+	detail::OptionBuilder _options;
 };
 
 class TerminalPuzzleSimulator: public PuzzleSimulator
 {
 public:
-	explicit TerminalPuzzleSimulator( const PuzzleSolver& solver, const OptionBuilder& options)
+	explicit TerminalPuzzleSimulator( const PuzzleSolver& solver, const detail::OptionBuilder& options)
 		: PuzzleSimulator( solver, options)
 	{
 		auto clone = _solver.puzzle();
@@ -179,9 +182,9 @@ public:
 			                return inner;
 		                });
 		words = _solver.words();
-		longest_size = static_cast<int>( std::max_element( _solver.matches().cbegin(), _solver.matches().cend(),
+		longest_size = std::max_element( _solver.matches().cbegin(), _solver.matches().cend(),
                        []( auto& left, auto& right) { return left.word.size() < right.word.size();})
-		               ->word.size()) + 2;
+		               ->word.size() + 2;
 	}
 
 	void setSimulatorSpeed( int fps )
@@ -189,9 +192,9 @@ public:
 		m_sim_speed = fps > 0 ? 1000 / fps : m_sim_speed;
 	}
 
-	Conclusion simulate( std::ostream &strm, int puzzle_number, bool refresh_run) override
+	detail::Conclusion simulate( std::ostream &strm, size_t puzzle_number, bool refresh_run) override
 	{
-		auto state_provider = StateProvider::instance( puzzle_number - 1);
+		auto state_provider = detail::EventDog::instance( puzzle_number - 1);
 		auto matches = _solver.matches();
 		std::vector<PuzzleSolver::underlying_type> base_order( matches.size());
 		std::copy( matches.cbegin(), matches.cend(), base_order.begin());
@@ -201,14 +204,14 @@ public:
 		std::vector<PuzzleSolver::underlying_type> soln( base_order.size());
 		std::copy( base_order.cbegin(), base_order.cend(), soln.begin());
 
-		int n_lines, padding, rem_lines, word_row, word_col;
+		size_t n_lines, padding, rem_lines, word_row, word_col;
 		size_t n_cols;
 		auto populate = [&]()
 		{
 			printf("\x1B[2J\x1B[H");    // Clear screen and move cursor to origin
 			std::tie( n_lines, padding) = display( strm, puzzle_number);
-			rem_lines = (int) StateProvider::getWinLines() - n_lines;
-			n_cols = (int) StateProvider::getWinCols() / longest_size;
+			rem_lines = detail::EventDog::getWinLines() - n_lines;
+			n_cols = detail::EventDog::getWinCols() / longest_size;
 			word_row = word_col = 0;
 		};
 		populate();
@@ -240,11 +243,11 @@ public:
 				else if( input == Q( KEY_NEXT) || input == Q( KEY_PREVIOUS))
 				{
 					fast_forward = state_provider->paused();
-					return input == Q( KEY_NEXT) ? Conclusion::Forward : Conclusion::Rewind;
+					return input == Q( KEY_NEXT) ? detail::Conclusion::Forward : detail::Conclusion::Rewind;
 				}
 			}
 
-			return Conclusion::Finished;
+			return detail::Conclusion::Finished;
 		};
 
 		// Disable buffering in terminal
@@ -264,14 +267,17 @@ public:
 			for( auto b_w = b_soln->word.begin(), e_w = b_soln->word.end(); !reset && b_w != e_w; ++b_w)
 			{
 				auto w = *b_w;
-				printf( "\x1B[%d;%dH\x1B[%dm%c\x1B[0m\x1B", m.start.x + 1 + 2, 3 * m.start.y + padding,
-				        color, puzzle[ m.start.x][ m.start.y]);
+				printf( "\x1B[%d;%dH\x1B[%dm%c\x1B[0m\x1B", 
+                        m.start.x + 1 + 2, 
+                        3 *  m.start.y + static_cast<int>( padding),
+				        color, 
+                        puzzle[ static_cast<size_t>( m.start.x)][ static_cast<size_t>( m.start.y)]);
 				if( fast_forward || refresh_run)
 				{
 					if( last_char ==  w && last_x_pos == m.start.x && last_y_pos == m.start.y)
 					{
 						if( refresh_run)
-							return Conclusion::Rewind;
+							return detail::Conclusion::Rewind;
 
 						fast_forward = false;
 					}
@@ -280,12 +286,12 @@ public:
 				{
 					{
 						auto result = freeze( b_soln, reset);
-						if ( result != Conclusion::Finished)
+						if ( result != detail::Conclusion::Finished)
 							return result;
 					}
-					switch( watchEvent( m_sim_speed))
+					switch( detail::watchEvent( m_sim_speed))
 					{
-						case Event::Resize:
+						case detail::Event::Resize:
 							fast_forward = reset = true;
 							last_x_pos = m.start.x;
 							last_y_pos = m.start.y;
@@ -294,27 +300,27 @@ public:
 							b_soln = soln.begin();
 							populate();
 							continue;
-						case Event::Quit:
+						case detail::Event::Quit:
 							exit( EXIT_SUCCESS);
-						case Event::Pause:
+						case detail::Event::Pause:
 						{
 							last_x_pos = m.start.x;
 							last_y_pos = m.start.y;
 							last_char  = w;
 							state_provider->paused() = true;
 							auto result = freeze( b_soln, reset);
-							if( result != Conclusion::Finished)
+							if( result != detail::Conclusion::Finished)
 								return result;
 							break;
 						}
-						case Event::Restart:
+						case detail::Event::Restart:
 							restart( b_soln, reset);
 							continue;
-						case Event::Focus:
+						case detail::Event::Focus:
 						{
 							char remaining[ 3]{};
 							// The first focus is a false trigger. Discard it.
-							if( !StateProvider::firstFocus() && read( STDIN_FILENO, remaining, 2) == 2)
+							if( !detail::EventDog::firstFocus() && read(STDIN_FILENO, remaining, 2) == 2)
 							{
 								if( strcmp( remaining, "[I") == 0)
 									state_provider->paused() = false;
@@ -327,14 +333,14 @@ public:
 									freeze( b_soln, reset);
 								}
 							}
-							StateProvider::firstFocus() = false;
+							detail::EventDog::firstFocus() = false;
 							break;
 						}
-						case Event::Next:
-							return Conclusion::Forward;
-						case Event::Previous:
-							return Conclusion::Rewind;
-						case Event::NoOp:
+						case detail::Event::Next:
+							return detail::Conclusion::Forward;
+						case detail::Event::Previous:
+							return detail::Conclusion::Rewind;
+						case detail::Event::NoOp:
 							break;
 					}
 				}
@@ -344,9 +350,9 @@ public:
 			if( rem_lines > 0 && !reset)
 			{
 				// Display search complete indicator for word.
-				auto current_word = ( m.reversed ? reversed( m.word) : m.word)
-					.append( std::string( longest_size - m.word.size(), ' '));
-				printf( "\x1B[%d;%zuH\x1B[%dm%s", n_lines + (word_row % rem_lines),
+				auto current_word = ( m.reversed ? detail::util::reversed( m.word) : m.word)
+					.append( std::string( static_cast<size_t>( longest_size) - m.word.size(), ' '));
+				printf( "\x1B[%lu;%zuH\x1B[%dm%s", n_lines + (word_row % rem_lines),
 				        (( word_row > 0 && ( word_row % rem_lines == 0) ? ++word_col
 				         : word_col) % n_cols) * longest_size, color, current_word.c_str());
 				++word_row;
@@ -355,7 +361,7 @@ public:
 		// We are done! Restore cursor position
 		printf("\x1B[u");
 
-		return Conclusion::Finished;
+		return detail::Conclusion::Finished;
 	}
 
 private:
@@ -378,9 +384,9 @@ private:
 		if(( c & 0x80) != 0x80)
 			return 1;
 		// If not, reverse the byte
-		c =   ( c & 0x55) << 1 | ( c & 0xAA) >> 1;
-		c =   ( c & 0x33) << 2 | ( c & 0xCC) >> 2;
-		c = (( c & 0x0F) << 4  | ( c & 0xFF) >> 4);
+		c = static_cast<uint8_t>(( c &  0x55) << 1) | ( c & 0xAA) >> 1;
+		c = static_cast<uint8_t>(( c &  0x33) << 2) | ( c & 0xCC) >> 2;
+		c = static_cast<uint8_t>(( c &  0x0F) << 4) | ( c & 0xFF) >> 4;
 		// Mask out the continuous runs of ones in the leading byte( now trailing)
 		c = ( c ^ ( c + 1)) >> 1;
 		// Count the remaining bits in the byte.
@@ -392,17 +398,17 @@ private:
 		size_t iters = 0;
 		while( *ps)
 		{
-			ps += byteCount( *ps);
+			ps += byteCount( static_cast<uint8_t>( *ps));
 			++iters;
 		}
 
 		return iters;
 	}
 
-	std::pair<int, int> display( std::ostream& strm, int puzzle_number = 1)
+	std::pair<int, int> display( std::ostream& strm, size_t puzzle_number = 1)
 	{
-		auto rows = StateProvider::getWinLines(),
-			 cols = StateProvider::getWinCols();
+		auto rows = detail::EventDog::getWinLines(),
+			 cols = detail::EventDog::getWinCols();
 		auto cols_padding = ((int)(cols - 3 * puzzle.size() + 1)) / 2;
 		if( 0 > cols_padding || puzzle.front().size() > rows)
 			panic_exit();
@@ -446,7 +452,12 @@ private:
 			auto v_align = ( 4 + static_cast<int>( puzzle.size()) - static_cast<int>( control_info.size())) / 2,
 				 h_align = ( cols_padding - max_text_size) / 2;
 			for( size_t i = 0; i < control_info.size(); ++i)
-				printf( "\x1B[%lu;%dH%s", v_align + i, h_align, control_info[ i]);
+            {
+				printf( "\x1B[%d;%dH%s", 
+                        v_align + static_cast<int>( i), 
+                        h_align, 
+                        control_info[ i]);
+            }
 			printf( "\x1B[%d;%dH", n_lines + 1, 0);
 		}
 
@@ -462,8 +473,8 @@ private:
 
 	static void panic_exit()
 	{
-		const auto win_width = StateProvider::getWinCols();
-		const auto half_win_height = StateProvider::getWinLines() / 2;
+		const auto win_width = detail::EventDog::getWinCols();
+		const auto half_win_height = detail::EventDog::getWinLines() / 2;
 		constexpr std::string_view main_message = "Puzzle too large for your terminal",
 								   exit_message = "Press ENTER to exit";
 		fprintf( stderr, "\x1B[?25l\x1B[%ld;%ldH\x1B[31m%s\x1B[0m", half_win_height,
@@ -487,8 +498,8 @@ private:
 	std::vector<std::string> words;
 	std::unordered_map<std::string, int> color_selection;
 	int last_x_pos{ NEG_INF},
-		last_y_pos{ NEG_INF},
-		longest_size{};
+		last_y_pos{ NEG_INF};
+    size_t longest_size{};
 	bool fast_forward{};
 	char last_char{ CHAR_MAX};
 	int m_sim_speed = 1000/2;

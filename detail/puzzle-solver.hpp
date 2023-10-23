@@ -47,7 +47,7 @@ public:
 			m_tracker.clear();
 			for( const auto& w : m_words )
 				if( !m_found[ w ] )
-					m_rev_words.push_back( reversed( w ) );
+					m_rev_words.push_back( detail::util::reversed( w ) );
 			for( const auto& nw : m_rev_words )
 			{
 				ProgressTracker rev{ nw, nw.size() - 1};
@@ -73,7 +73,7 @@ public:
 		return m_words;
 	}
 	
-	static auto next( Dir direction )
+	static auto next( detail::Dir direction )
 	{
 		return m_dirlookup[ direction ];
 	}
@@ -81,13 +81,13 @@ public:
 private:
 	void solve_()
 	{
-		for( int i = 0; i < m_puzzle.size(); ++i )
+		for( size_t i = 0; i < m_puzzle.size(); ++i )
 		{
-			for( int j = 0; j < m_puzzle[ i].size(); ++j )
+			for( size_t j = 0; j < m_puzzle[ i].size(); ++j )
 			{
 				auto match = m_tracker.find( m_puzzle[ i][ j] );
 				if( match == m_tracker.cend() ) continue ;
-				step( match->second, { i, j } );
+				step( match->second, { static_cast<int>(i),  static_cast<int>(j) } );
 				removeStalePath( match->second );
 			}
 		}
@@ -132,8 +132,8 @@ private:
 	{
 		std::string word;
 		size_t end{ SIZE_MAX}, begin{};
-		Dir dmatch{ NL };
-		Coord pos, start;
+        detail::Dir dmatch{ detail::Dir::NL };
+		Coord pos{}, start{};
 		bool reversed{ false }, invalid{ false };
 	};
 
@@ -156,14 +156,14 @@ private:
 		{
 			ProgressTracker next{ m };
 			next.pos = pos;
-			if( m.dmatch == NL )
+			if( m.dmatch == detail::Dir::NL )
 			{
 				if( m.start.x == NEG_INF )
 					next.start = pos;
 				else
 				{
 					next.dmatch = newDir( m.pos, pos );
-					if( next.dmatch == NL )
+					if( next.dmatch == detail::Dir::NL )
 						continue ;
 				}
 				m_tracker[ next.word[ ++next.begin]].emplace_front( next);
@@ -189,20 +189,22 @@ private:
 	bool tallies( const ProgressTracker& tracker )
 	{
 		Coord clone = tracker.start;
-		auto p_rows = m_puzzle.size(),
-			 p_cols = m_puzzle.front().size();
+		auto p_rows = static_cast<int>( m_puzzle.size()),
+			 p_cols = static_cast<int>( m_puzzle.front().size());
 		for( std::size_t i = 0; i < tracker.word.size(); ++i )
 		{
-			if( clone.x >= p_rows || clone.y >= p_cols || m_puzzle[ clone.x ][ clone.y ] != tracker.word[ i ] )
+			if( clone.x >= p_rows || clone.y >= p_cols 
+                || m_puzzle[ static_cast<size_t>( clone.x)]
+                    [ static_cast<size_t>( clone.y)] != tracker.word[ i ] )
 				return false;
 			clone = m_dirlookup[ tracker.dmatch ]( clone );
 		}
 		return true;
 	}
 	
-	static Dir newDir( Coord oldp, Coord newp )
+	static detail::Dir newDir( Coord oldp, Coord newp )
 	{
-		Dir new_dir = NL;
+        detail::Dir new_dir = detail::Dir::NL;
 		int rw[] = {  0, 0, -1, 1,  1, -1, -1, 1 },
 		    cl[] = { -1, 1,  0, 0, -1,  1, -1, 1 };
 		for( int i = 0; i < 8; ++i )
@@ -210,7 +212,7 @@ private:
 			Coord pos{ oldp.x + cl[ i], oldp.y + rw[ i] };
 			if( newp.x == pos.x && newp.y == pos.y )
 			{
-				new_dir = Dir(i+1);
+				new_dir = detail::Dir(i+1);
 				break;
 			}
 		}
@@ -231,22 +233,19 @@ private:
 	std::vector<std::string> m_puzzle, m_words;
 	std::unordered_set<ProgressTracker, ProgressTrackerHash> m_completed;
 	std::unordered_map<std::string, bool> m_found;
-	static std::unordered_map<Dir, std::function<Coord(Coord)>> m_dirlookup;
+	static inline std::unordered_map<detail::Dir, std::function<Coord(Coord)>> m_dirlookup =  {
+        { detail::Dir::NL, []( auto     ) -> Coord { return { NEG_INF, NEG_INF }; } },
+        { detail::Dir::NT, []( auto pos ) -> Coord { return { pos.x-1, pos.y   }; } },
+        { detail::Dir::ST, []( auto pos ) -> Coord { return { pos.x+1, pos.y   }; } },
+        { detail::Dir::ET, []( auto pos ) -> Coord { return { pos.x,   pos.y+1 }; } },
+        { detail::Dir::WT, []( auto pos ) -> Coord { return { pos.x,   pos.y-1 }; } },
+        { detail::Dir::NE, []( auto pos ) -> Coord { return { pos.x-1, pos.y+1 }; } },
+        { detail::Dir::SE, []( auto pos ) -> Coord { return { pos.x+1, pos.y+1 }; } },
+        { detail::Dir::NW, []( auto pos ) -> Coord { return { pos.x-1, pos.y-1 }; } },
+        { detail::Dir::SW, []( auto pos ) -> Coord { return { pos.x+1, pos.y-1 }; } }
+    };
 };
 
-std::unordered_map<Dir, 
-std::function<PuzzleSolver::Coord(PuzzleSolver::Coord)>> PuzzleSolver::m_dirlookup
-{
-	{ Dir::NL, []( auto pos ){ return Coord{                  }; } },
-	{ Dir::NT, []( auto pos ){ return Coord{ pos.x-1, pos.y   }; } },
-	{ Dir::ST, []( auto pos ){ return Coord{ pos.x+1, pos.y   }; } },
-	{ Dir::ET, []( auto pos ){ return Coord{ pos.x,   pos.y+1 }; } },
-	{ Dir::WT, []( auto pos ){ return Coord{ pos.x,   pos.y-1 }; } },
-	{ Dir::NE, []( auto pos ){ return Coord{ pos.x-1, pos.y+1 }; } },
-	{ Dir::SE, []( auto pos ){ return Coord{ pos.x+1, pos.y+1 }; } },
-	{ Dir::NW, []( auto pos ){ return Coord{ pos.x-1, pos.y-1 }; } },
-	{ Dir::SW, []( auto pos ){ return Coord{ pos.x+1, pos.y-1 }; } }
-};
 
 class PuzzleFileReader
 {
@@ -281,18 +280,20 @@ private:
 	
 	void parseFile()
 	{
-		ParseMode mode = NILL;
+        constexpr auto PUZZLE = std::string_view{ "puzzle:"};
+        constexpr auto KEY    = std::string_view{ "key:"};
+		auto mode = ParseMode::NILL;
 		std::vector<std::string> cur[ 2];
 		while( m_istrm )
 		{
 			auto w = nextWord();
 			if( w.empty() )
 				continue;
-			if( mode != NILL && w.back() != ':' )
-				cur[ mode-1 ].push_back( shaped( w ) );
+			if( mode != ParseMode::NILL && w.back() != ':' )
+				cur[ static_cast<int>(mode)-1 ].push_back( shaped( w ) );
 			else
 			{
-				if( mode != NILL && !cur[ 0].empty() && !cur[ 1].empty() )
+				if( mode != ParseMode::NILL && !cur[ 0].empty() && !cur[ 1].empty() )
 				{
 					m_puzzles.push_back( {} );
 					m_puzzles.back().puzzle = cur[ 0];
@@ -300,12 +301,13 @@ private:
 					cur[ 0].clear(); cur[ 1].clear();
 				}
 				
-				if( strcasecmp( w.data(), "puzzle:" )  == 0 )
-					mode = PUZZLE;
-				else if( strcasecmp( w.data(), "key:" ) == 0 )
-					mode = KEY;
+                std::transform( w.begin(), w.end(), w.begin(), ::tolower);
+				if( w == PUZZLE )
+					mode = ParseMode::PUZZLE;
+				else if( w == KEY)
+					mode = ParseMode::KEY;
 				else
-					mode = NILL;
+					mode = ParseMode::NILL;
 			}
 		}
 		
@@ -329,7 +331,7 @@ private:
 		return word;
 	}
 
-	enum ParseMode
+	enum class ParseMode
 	{
 		NILL,
 		PUZZLE,

@@ -13,14 +13,16 @@ file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" PACKAGE_VERSION)
 string(REGEX REPLACE "([0-9]+)\\.[0-9]+\\.[0-9]+.*" "\\1" CPACK_PACKAGE_VERSION_MAJOR ${PACKAGE_VERSION})
 string(REGEX REPLACE "[0-9]+\\.([0-9]+)\\.[0-9]+.*" "\\1" CPACK_PACKAGE_VERSION_MINOR ${PACKAGE_VERSION})
 string(REGEX REPLACE "[0-9]+\\.[0-9]+\\.([0-9]+).*" "\\1" CPACK_PACKAGE_VERSION_PATCH ${PACKAGE_VERSION})
-
-set(PROJECT_VERSION ${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH})
-
+string(REGEX REPLACE ".+(-.+)" "\\1" PRE_RELEASE_TAG ${PACKAGE_VERSION})
+if(PRE_RELEASE_TAG STREQUAL "")
+unset(PRE_RELEASE_TAG)
+endif()
+set(PROJECT_VERSION "${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}${PRE_RELEASE_TAG}")
 add_executable(${APP_NAME} main.cpp
-                       option-builder.hpp
-                       puzzle-solver.hpp
-                       puzzle-simulator.hpp
-                       utility.hpp)
+                       detail/option-builder.hpp
+                       detail/puzzle-solver.hpp
+                       detail/puzzle-simulator.hpp
+                       detail/utility.hpp)
 target_compile_definitions(${APP_NAME} PUBLIC APP_NAME="${APP_NAME}")
 
 include(GNUInstallDirs)
