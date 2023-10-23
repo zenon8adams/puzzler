@@ -9,10 +9,13 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
-#include "puzzle-simulator.hpp"
-#include "option-builder.hpp"
+#include "detail/puzzle-simulator.hpp"
+#include "detail/option-builder.hpp"
 
 #define NOT_SET  nullptr
+
+namespace detail
+{
 
 static void resize_handler( int signal)
 {
@@ -20,7 +23,7 @@ static void resize_handler( int signal)
 		return;
 	struct winsize window_size{};
 	ioctl(0, TIOCGWINSZ, &window_size);
-	auto w_instance = EventDog::instance();
+	auto w_instance = detail::EventDog::instance();
 	w_instance->setWinSize(window_size.ws_row, window_size.ws_col);
 }
 
@@ -40,24 +43,27 @@ static void refresh_before_exit( int signal)
 	_Exit( signal);
 }
 
+namespace util
+{
 template<typename Pred, typename First, typename... Others>
 bool compareAnd( First base, Others... others)
 {
 	return ( ... && Pred()( base, others));
 }
+}
+}
 
-#define DEFINED( arg) (arg).empty()
 
 int main( int argc, char *argv[])
 {
-	const char *puzzle_file = NOT_SET;
-	OptionBuilder builder( argc, argv);
-	builder.addMismatchConsumer([ &]( const char *option)
+    std::string_view puzzle_file;
+	detail::OptionBuilder builder( argc, argv);
+	builder.addMismatchConsumer([ &]( std::string_view option)
 	{
 		puzzle_file = option;
 	});
 
-	builder.addOption("help", "h", NOT_SET, "Show this page.")
+	builder.addOption("help", "h", {}, "Show this page.")
 		   .addOption("speed", "s", "1", "Set the simulation speed for the solver.")
 		   .addOption( "file", "f", "Set the file containing the puzzle.")
 		   .addOption( "matches-only", "only", "no", "Display matched words only.")
@@ -68,23 +74,23 @@ int main( int argc, char *argv[])
 		   .addOption( "reverse-solve", "r", "no", "Reverse the effect of forward and rewind button.")
 		   .build();
 
-	if( !DEFINED( builder.asDefault( "help")))
+	if( !builder.asDefault( "help").empty())
 	{
 		builder.showHelp();
 		exit( EXIT_SUCCESS);
 	}
 
 	auto maybe_file = builder.asDefault( "file");
-	if( !DEFINED( maybe_file))
+	if( !maybe_file.empty())
 		puzzle_file = maybe_file.data();
 
-	if( puzzle_file == nullptr)
+	if( puzzle_file.empty())
 	{
 		builder.showHelp();
 		exit( EXIT_FAILURE);
 	}
 
-	auto scope = std::ifstream( puzzle_file);
+	auto scope = std::ifstream( puzzle_file.data());
 	if( !scope)
 	{
 		fprintf( stderr, "Invalid file!");
@@ -100,19 +106,19 @@ int main( int argc, char *argv[])
 	}
 
 	struct sigaction resize_action{};
-	resize_action.sa_handler = resize_handler;
+	resize_action.sa_handler = detail::resize_handler;
 	sigaction( SIGWINCH, &resize_action, NOT_SET);
 	raise( SIGWINCH);   // Get current window size.
 	// If $LINES and $COLUMNS is non-zero, terminal supports cursor motion.
-	if( EventDog::getWinLines() && EventDog::getWinCols())
+	if( detail::EventDog::getWinLines() && detail::EventDog::getWinCols())
 	{
 		struct sigaction refresh_action{};
-		refresh_action.sa_handler = refresh_before_exit;
+		refresh_action.sa_handler = detail::refresh_before_exit;
 		sigaction( SIGINT, &refresh_action, NOT_SET);
-		atexit( [] { refresh_before_exit( EXIT_SUCCESS);});
+		atexit( [] { detail::refresh_before_exit( EXIT_SUCCESS);});
 
 		struct termios raw_term_state{};
-		tcgetattr( STDIN_FILENO, &orig_term_state);
+		tcgetattr( STDIN_FILENO, &detail::orig_term_state);
 		raw_term_state.c_iflag       = ICRNL | IUTF8;
 		raw_term_state.c_oflag       = OPOST | OFILL | ONLCR | NL0;
 		raw_term_state.c_lflag       = ISIG;
@@ -138,26 +144,26 @@ int main( int argc, char *argv[])
 		for( auto begin = g_begin, end = g_end; begin != end;)
 		{
 			// Calculate the puzzle number to indicate at the top
-			auto puzzle_number = static_cast<int>( std::distance( response.cbegin(), begin) + 1);
+			auto puzzle_number = static_cast<size_t>( std::distance( response.cbegin(), begin)) + 1;
 			PuzzleSolver solver( begin->puzzle, begin->keys);
 			if( !sims[ puzzle_number - 1])
 				sims[ puzzle_number - 1] = std::make_unique<TerminalPuzzleSimulator>( solver, builder);
 
 			auto& term_simulator = sims[ puzzle_number - 1];
 			term_simulator->setSimulatorSpeed(( int)builder.asInt("speed"));
-			EventDog::registerWinUpdateCallback([ &term_simulator, &puzzle_number](bool refresh)
+			detail::EventDog::registerWinUpdateCallback([ &term_simulator, &puzzle_number](bool refresh)
 			                                          {
 				                                          term_simulator->simulate( std::cout, puzzle_number, refresh);
 			                                          });
 			// Returns indication that this run completed.
 			auto status = term_simulator->simulate( std::cout, puzzle_number, false);
 			printf("\x1B[?25l");
-			int input{};
-			while( status == Conclusion::Finished  && !builder.asBool( "auto-next") &&
-			       compareAnd<std::not_equal_to<char>>( input = std::getchar(),
+			char input{};
+			while( status == detail::Conclusion::Finished  && !builder.asBool( "auto-next") &&
+			       detail::util::compareAnd<std::not_equal_to<char>>( input = static_cast<char>( std::getchar()),
 				   Q( KEY_QUIT), Q( KEY_RESTART), Q( KEY_NEXT), Q( KEY_REWIND)))
 				;
-			if( status == Conclusion::Rewind || input == Q( KEY_REWIND))
+			if( status == detail::Conclusion::Rewind || input == Q( KEY_REWIND))
 			{
 				begin = begin != g_begin ? begin - step
 						: builder.asBool( "wrap") ? g_end - step : begin;
